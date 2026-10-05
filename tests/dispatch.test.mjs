@@ -74,6 +74,40 @@ test("summarizeFileChanges keeps created files as added and skips unapplied patc
   ]);
 });
 
+test("summarizeFileChanges shows paths inside the workspace relative to it", () => {
+  const files = summarizeFileChanges(
+    [{ status: "completed", changes: [{ path: "/repo/src/a.js", kind: { type: "add" } }, { path: "/elsewhere/b.js", kind: { type: "add" } }] }],
+    "/repo"
+  );
+  assert.deepEqual(files.map((file) => file.path), ["src/a.js", "/elsewhere/b.js"]);
+});
+
+test("long runs list the last run of each verification command plus the most recent commands", () => {
+  const raw = [
+    { command: "npm test", exitCode: 1, status: "failed" },
+    ...Array.from({ length: 12 }, (_, index) => ({ command: `rg step${index}`, exitCode: 0, status: "completed" })),
+    { command: "npm test", exitCode: 0, status: "completed" },
+    { command: "npm run lint", exitCode: 1, status: "failed" },
+    ...Array.from({ length: 5 }, (_, index) => ({ command: `cat out${index}`, exitCode: 0, status: "completed" }))
+  ];
+  const rendered = renderDispatchReport({
+    status: "completed",
+    jobId: "dispatch-2",
+    write: true,
+    cwd: "/repo",
+    finalMessage: "done",
+    files: [],
+    commands: summarizeCommands(raw)
+  });
+  const listed = rendered.split("\n").filter((line) => /^ {2}[✓✗] /.test(line));
+  assert.deepEqual(listed, [
+    "  ✓ npm test (exit 0)",
+    "  ✗ npm run lint (exit 1)",
+    ...Array.from({ length: 5 }, (_, index) => `  ✓ cat out${index} (exit 0)`)
+  ]);
+  assert.match(rendered, /Commands run: 20 \(2 with non-zero exit\)\n {2}\(showing 7:/);
+});
+
 test("summarizeCommands unwraps the login shell and flags failures", () => {
   const [first, second] = summarizeCommands([
     { command: "/bin/bash -lc 'npm test -- --grep auth'", exitCode: 1, status: "failed" },
@@ -116,9 +150,10 @@ test("dispatch runs Codex as a delegated worker and appends runtime evidence", (
   assert.match(result.stdout, /Codex dispatch evidence \(observed by the plugin runtime, not written by Codex\):/);
   assert.match(result.stdout, /Sandbox: workspace-write/);
   assert.match(result.stdout, /modified: src\/app\.js\n {2}added: src\/new\.js/);
-  assert.match(result.stdout, /Commands run: 3 \(1 with non-zero exit\)/);
-  assert.match(result.stdout, /✓ npm test \(exit 0\)/);
-  assert.doesNotMatch(result.stdout, /rg -n handler/);
+  assert.match(
+    result.stdout,
+    /Commands run: 3 \(1 with non-zero exit\)\n {2}✗ npm test \(exit 1\)\n {2}✓ npm test \(exit 0\)\n {2}✓ rg -n handler src \(exit 0\)/
+  );
 
   const state = ctx.readFakeState();
   assert.equal(state.lastThreadStart.sandbox, "workspace-write");

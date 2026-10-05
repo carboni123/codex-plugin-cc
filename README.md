@@ -281,8 +281,12 @@ Files changed (2):
   modified: src/auth/session.ts
   added: src/auth/session.test.ts
 Commands run: 14 (2 with non-zero exit)
-Verification commands (last run of each):
+  (showing 6: the last run of each test/build/lint command and the last 5 commands)
   ✓ npm test -- session (exit 0)
+  ✓ git diff --stat (exit 0)
+  ✗ rg -n "expiresAt" src/legacy (exit 1)
+  ✓ sed -n 1,80p src/auth/session.ts (exit 0)
+  ✓ npx tsc --noEmit (exit 0)
   ✗ npm run lint (exit 1)
 Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k1c-x81
 ```

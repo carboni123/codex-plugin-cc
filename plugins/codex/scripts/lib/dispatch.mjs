@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { parseArgs, splitRawArgumentString } from "./args.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./prompts.mjs";
 
@@ -12,7 +14,9 @@ export const DISPATCH_DIRECTIVE_OPTIONS = {
 };
 
 const MAX_LISTED_FILES = 20;
-const MAX_LISTED_COMMANDS = 6;
+const LIST_ALL_COMMANDS_UP_TO = 10;
+const RECENT_COMMANDS = 5;
+const MAX_VERIFICATION_COMMANDS = 6;
 
 const WRITE_SANDBOX_RULES =
   "- You may edit files in the workspace to complete the task. Keep edits minimal and consistent with the surrounding code.";
@@ -91,7 +95,15 @@ function describeChangeKind(kind) {
   }
 }
 
-export function summarizeFileChanges(fileChanges = []) {
+function displayPath(filePath, cwd) {
+  if (!cwd || !path.isAbsolute(filePath)) {
+    return filePath;
+  }
+  const relative = path.relative(cwd, filePath);
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : filePath;
+}
+
+export function summarizeFileChanges(fileChanges = [], cwd = null) {
   const byPath = new Map();
   for (const item of fileChanges) {
     if (item?.status && item.status !== "completed") {
@@ -101,12 +113,13 @@ export function summarizeFileChanges(fileChanges = []) {
       if (!change?.path) {
         continue;
       }
+      const filePath = displayPath(change.path, cwd);
       const described = describeChangeKind(change.kind);
       // A file Codex created during the run is still "added" after later edits.
-      if (byPath.get(change.path) === "added" && described === "modified") {
+      if (byPath.get(filePath) === "added" && described === "modified") {
         continue;
       }
-      byPath.set(change.path, described);
+      byPath.set(filePath, described);
     }
   }
   return [...byPath].map(([path, change]) => ({ path, change }));
@@ -182,23 +195,33 @@ function pushEvidenceLines(lines, { files = [], commands = [], write }) {
   }
   lines.push(`Commands run: ${commands.length}${failed.length ? ` (${failed.length} with non-zero exit)` : ""}`);
 
-  // Keep the last run of each verification command: that is the state Codex finished in.
-  const latestVerification = new Map();
-  for (const entry of commands) {
+  const shown = selectCommandsToShow(commands);
+  if (shown.length < commands.length) {
+    lines.push(`  (showing ${shown.length}: the last run of each test/build/lint command and the last ${RECENT_COMMANDS} commands)`);
+  }
+  for (const index of shown) {
+    lines.push(`  ${formatCommand(commands[index])}`);
+  }
+}
+
+// Short runs list every command. Long runs keep what matters for checking Codex's claims:
+// the final state of each verification command, plus how the run ended.
+function selectCommandsToShow(commands) {
+  if (commands.length <= LIST_ALL_COMMANDS_UP_TO) {
+    return commands.map((_, index) => index);
+  }
+  const lastVerificationRun = new Map();
+  commands.forEach((entry, index) => {
     if (entry.verification) {
-      latestVerification.delete(entry.command);
-      latestVerification.set(entry.command, entry);
+      lastVerificationRun.delete(entry.command);
+      lastVerificationRun.set(entry.command, index);
     }
+  });
+  const selected = new Set([...lastVerificationRun.values()].slice(-MAX_VERIFICATION_COMMANDS));
+  for (let index = commands.length - RECENT_COMMANDS; index < commands.length; index += 1) {
+    selected.add(index);
   }
-  const verification = [...latestVerification.values()].slice(-MAX_LISTED_COMMANDS);
-  if (verification.length > 0) {
-    lines.push("Verification commands (last run of each):");
-    for (const entry of verification) {
-      lines.push(`  ${formatCommand(entry)}`);
-    }
-  } else {
-    lines.push("Verification commands: none detected");
-  }
+  return [...selected].sort((left, right) => left - right);
 }
 
 /**

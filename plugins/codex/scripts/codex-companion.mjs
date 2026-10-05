@@ -577,7 +577,7 @@ async function executeDispatchRun(request) {
     durationMs: Date.now() - startedAt,
     finalMessage,
     error,
-    files: summarizeFileChanges(result.fileChanges),
+    files: summarizeFileChanges(result.fileChanges, workspaceRoot),
     commands: summarizeCommands(result.commandExecutions),
     reasoningSummary: result.reasoningSummary
   };

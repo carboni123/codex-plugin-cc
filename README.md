@@ -12,6 +12,7 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
+- `codex:dispatch`, a subagent type Claude can use instead of its own subagents, so delegated work runs on Codex while Claude orchestrates
 
 ## Requirements
 
@@ -235,6 +236,73 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
+
+## Replacing Claude Subagents With Codex
+
+`codex:dispatch` is a subagent type that does the same job as a Claude subagent, but on Codex. Anywhere Claude would spawn `general-purpose`, an implementer, or a research agent, it can pass the same prompt to `codex:dispatch` instead:
+
+```text
+Agent(subagent_type: "codex:dispatch", description: "Fix flaky auth test", prompt: "...")
+```
+
+Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, `isolation: "worktree"`, and follow-ups through `SendMessage`, which continue the same Codex thread. A small Haiku relay forwards the prompt verbatim; Codex does the work.
+
+To make Claude prefer it, say so in the conversation or in `CLAUDE.md`, for example: "Delegate implementation and research subagent work to `codex:dispatch`."
+
+**Options.** The Agent tool only carries a prompt, so options go on the prompt's first line:
+
+```text
+--read-only --effort high --label auth-audit
+Find every place the session token is parsed and check each one for missing expiry validation.
+```
+
+| Directive | Effect |
+| --- | --- |
+| `--read-only` | Read-only sandbox, for investigation and research. Without it, the run is write-capable, like a `general-purpose` subagent. |
+| `--effort <none\|minimal\|low\|medium\|high\|xhigh>` | Codex reasoning effort |
+| `--model <name\|spark>` | Codex model (`spark` maps to `gpt-5.3-codex-spark`) |
+| `--label <name>` | Name shown in `/codex:status` and the Codex thread list |
+| `--raw` | Send the prompt without the delegated-worker contract described below |
+
+**What Codex is told.** Each task is wrapped in a delegated-worker contract. It tells Codex that a Claude orchestrator only sees its final message and nobody can answer questions mid-run. Codex is asked to:
+
+- work autonomously, stay in scope, and not commit unless asked
+- verify its work
+- end with a fixed report: Outcome, Details, Verification, Open issues
+
+**What Claude gets back.** Codex's report, followed by an evidence block that the plugin builds from the app-server event stream, not from anything Codex wrote:
+
+```text
+---
+Codex dispatch evidence (observed by the plugin runtime, not written by Codex):
+Status: completed · 4m 12s · job dispatch-mg2k1c-x81 · thread thr_19
+Sandbox: workspace-write · cwd: /repo
+Files changed (2):
+  modified: src/auth/session.ts
+  added: src/auth/session.test.ts
+Commands run: 14 (2 with non-zero exit)
+Verification commands (last run of each):
+  ✓ npm test -- session (exit 0)
+  ✗ npm run lint (exit 1)
+Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k1c-x81
+```
+
+Claude can check Codex's claims against this block. If the report says "tests pass" but the evidence shows a failing test run, Claude can see the mismatch.
+
+**Long runs and stopping.** Each dispatch is a tracked background job, so it shows up in `/codex:status`, `/codex:result`, and `/codex:cancel`. The relay checks in about every 100 seconds, so recent Codex activity shows up in the agent's transcript while it works. Stopping the agent stops Codex too: when the waiting process is terminated, the job is cancelled and the Codex turn interrupted.
+
+**Without the relay.** The `SessionStart` hook exports `CODEX_COMPANION_ROOT`, so the main Claude thread can also dispatch directly with a background Bash command and get notified when it exits:
+
+```bash
+node "$CODEX_COMPANION_ROOT/scripts/codex-companion.mjs" dispatch --timeout none <<'EOF'
+--read-only
+Map every caller of resolveWorkspaceRoot and note which ones assume a git checkout.
+EOF
+```
+
+`dispatch --timeout 0` returns a job id right away, and `wait <job-id> [--timeout 5m]` picks it up later. Add `--json` to either for machine-readable output.
+
+**`codex:dispatch` vs `/codex:rescue`.** `/codex:rescue` is for you: hand Codex a problem from the prompt, with thread-reuse questions and Codex's output shown verbatim. `codex:dispatch` is for Claude: a subagent replacement that Claude orchestrates, runs in parallel, and checks against evidence.
 
 ## Typical Flows
 

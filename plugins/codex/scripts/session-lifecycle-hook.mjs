@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
@@ -19,6 +21,10 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+// Lets the main Claude thread run the companion directly, e.g.
+// node "$CODEX_COMPANION_ROOT/scripts/codex-companion.mjs" dispatch ...
+const PLUGIN_ROOT_ENV = "CODEX_COMPANION_ROOT";
+const PLUGIN_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -78,6 +84,7 @@ function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
+  appendEnvVar(PLUGIN_ROOT_ENV, PLUGIN_ROOT);
 }
 
 async function handleSessionEnd(input) {

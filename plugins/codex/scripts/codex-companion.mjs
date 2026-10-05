@@ -22,6 +22,19 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
+import {
+  buildDispatchPrompt,
+  buildDispatchThreadName,
+  DEFAULT_DISPATCH_TIMEOUT_MS,
+  DISPATCH_DIRECTIVE_OPTIONS,
+  parseDuration,
+  renderDispatchPending,
+  renderDispatchReport,
+  renderDispatchUnfinished,
+  splitDispatchDirectives,
+  summarizeCommands,
+  summarizeFileChanges
+} from "./lib/dispatch.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
@@ -71,6 +84,9 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const COMPANION_SCRIPT = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
+const DISPATCH_POLL_INTERVAL_MS = 1000;
+const DISPATCH_PROGRESS_LINES = 6;
 
 function printUsage() {
   console.log(
@@ -80,6 +96,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark>] [--effort <effort>] [--raw] [prompt]",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout <90s|5m|none>] [--json]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -529,6 +547,60 @@ async function executeTaskRun(request) {
   };
 }
 
+async function executeDispatchRun(request) {
+  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  ensureCodexAvailable(request.cwd);
+
+  const startedAt = Date.now();
+  const result = await runAppServerTurn(workspaceRoot, {
+    resumeThreadId: request.resumeThreadId ?? null,
+    prompt: request.prompt,
+    model: request.model,
+    effort: request.effort,
+    sandbox: request.write ? "workspace-write" : "read-only",
+    onProgress: request.onProgress,
+    persistThread: true,
+    threadName: request.resumeThreadId ? null : buildDispatchThreadName(request.label, request.task)
+  });
+
+  const finalMessage = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const error = result.error?.message || (result.status !== 0 && result.stderr) || null;
+  const payload = {
+    status: result.status === 0 ? "completed" : "failed",
+    jobId: request.jobId ?? null,
+    threadId: result.threadId,
+    turnId: result.turnId,
+    label: request.label ?? null,
+    resumedFrom: request.resumedFrom ?? null,
+    write: Boolean(request.write),
+    cwd: workspaceRoot,
+    durationMs: Date.now() - startedAt,
+    finalMessage,
+    error,
+    files: summarizeFileChanges(result.fileChanges),
+    commands: summarizeCommands(result.commandExecutions),
+    reasoningSummary: result.reasoningSummary
+  };
+
+  // Skip markdown headings so the status table shows the outcome, not "## Outcome".
+  const summaryLine = finalMessage
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+
+  return {
+    exitStatus: result.status,
+    threadId: result.threadId,
+    turnId: result.turnId,
+    payload,
+    rendered: renderDispatchReport(payload),
+    summary: shorten(summaryLine || error || "Codex dispatch finished."),
+    jobTitle: request.label ? `Codex Dispatch: ${request.label}` : "Codex Dispatch",
+    jobClass: "dispatch",
+    write: Boolean(request.write)
+  };
+}
+
 function buildReviewJobMetadata(reviewName, target) {
   return {
     kind: reviewName === "Adversarial Review" ? "adversarial-review" : "review",
@@ -558,8 +630,8 @@ function renderQueuedTaskLaunch(payload) {
 }
 
 function getJobKindLabel(kind, jobClass) {
-  if (kind === "adversarial-review") {
-    return "adversarial-review";
+  if (kind === "adversarial-review" || kind === "dispatch") {
+    return kind;
   }
   return jobClass === "review" ? "review" : "rescue";
 }
@@ -669,8 +741,7 @@ async function runForegroundCommand(job, runner, options = {}) {
 }
 
 function spawnDetachedTaskWorker(cwd, jobId) {
-  const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  const child = spawn(process.execPath, [COMPANION_SCRIPT, "task-worker", "--cwd", cwd, "--job-id", jobId], {
     cwd,
     env: process.env,
     detached: true,
@@ -872,12 +943,240 @@ async function handleTaskWorker(argv) {
       logFile
     },
     () =>
-      executeTaskRun({
+      (request.dispatch ? executeDispatchRun : executeTaskRun)({
         ...request,
         onProgress: progress
       }),
     { logFile }
   );
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isFinite(pid)) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function markWorkerLost(workspaceRoot, job) {
+  const errorMessage = "The Codex worker process exited without recording a result.";
+  const completedAt = nowIso();
+  const existing = readStoredJob(workspaceRoot, job.id) ?? {};
+  writeJobFile(workspaceRoot, job.id, { ...existing, status: "failed", phase: "failed", pid: null, errorMessage, completedAt });
+  upsertJob(workspaceRoot, { id: job.id, status: "failed", phase: "failed", pid: null, errorMessage, completedAt });
+  appendLogLine(job.logFile, errorMessage);
+}
+
+async function waitForDispatchJob(cwd, reference, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  const snapshotOptions = { maxProgressLines: DISPATCH_PROGRESS_LINES };
+  for (;;) {
+    let snapshot = buildSingleJobSnapshot(cwd, reference, snapshotOptions);
+    if (!isActiveJobStatus(snapshot.job.status)) {
+      return snapshot;
+    }
+    if (!isProcessAlive(snapshot.job.pid)) {
+      // The worker may have finished between the state read and the liveness check.
+      await sleep(300);
+      snapshot = buildSingleJobSnapshot(cwd, reference, snapshotOptions);
+      if (!isActiveJobStatus(snapshot.job.status)) {
+        return snapshot;
+      }
+      markWorkerLost(snapshot.workspaceRoot, snapshot.job);
+      return buildSingleJobSnapshot(cwd, reference, snapshotOptions);
+    }
+    if (Date.now() >= deadline) {
+      return snapshot;
+    }
+    await sleep(Math.min(DISPATCH_POLL_INTERVAL_MS, deadline - Date.now()));
+  }
+}
+
+// A dispatch behaves like a subagent: when Claude stops the agent (or the Bash call that is
+// waiting on it), the Codex turn stops too instead of editing files unobserved.
+function cancelDispatchOnSignal(cwd, jobId) {
+  let handled = false;
+  const handler = async (signal) => {
+    if (handled) {
+      return;
+    }
+    handled = true;
+    try {
+      const { workspaceRoot, job } = resolveCancelableJob(cwd, jobId);
+      await cancelJob(cwd, workspaceRoot, job, `Cancelled because the waiting dispatch process received ${signal}.`);
+      process.stderr.write(`Cancelled Codex dispatch ${jobId} (${signal}).\n`);
+    } catch {
+      // The job already finished; nothing to cancel.
+    }
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const signal of signals) {
+    process.on(signal, handler);
+  }
+  return () => {
+    for (const signal of signals) {
+      process.off(signal, handler);
+    }
+  };
+}
+
+function buildDispatchWaitCommand(workspaceRoot, jobId) {
+  return `node "${COMPANION_SCRIPT}" wait ${jobId} --cwd "${workspaceRoot}"`;
+}
+
+async function waitAndRenderDispatch(cwd, jobId, timeoutMs, options = {}) {
+  const stopWatching = options.cancelOnSignal === false ? () => {} : cancelDispatchOnSignal(cwd, jobId);
+  let snapshot;
+  try {
+    snapshot = await waitForDispatchJob(cwd, jobId, timeoutMs);
+  } finally {
+    stopWatching();
+  }
+
+  const { workspaceRoot, job } = snapshot;
+  const storedJob = readStoredJob(workspaceRoot, job.id);
+  const active = isActiveJobStatus(job.status);
+  let rendered;
+  if (active) {
+    rendered = renderDispatchPending(job, buildDispatchWaitCommand(workspaceRoot, job.id));
+  } else if (storedJob?.rendered) {
+    rendered = storedJob.rendered;
+  } else {
+    rendered = renderDispatchUnfinished(job, storedJob);
+  }
+
+  const payload = {
+    jobId: job.id,
+    status: job.status,
+    phase: job.phase ?? null,
+    elapsed: job.elapsed ?? null,
+    progressPreview: active ? job.progressPreview : [],
+    next: active ? buildDispatchWaitCommand(workspaceRoot, job.id) : null,
+    report: storedJob?.result ?? null,
+    error: job.errorMessage ?? storedJob?.errorMessage ?? null
+  };
+  outputCommandResult(payload, rendered, options.json);
+  if (!active && job.status !== "completed") {
+    process.exitCode = 1;
+  }
+}
+
+function resolveDispatchResumeJob(cwd, reference) {
+  const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, reference);
+  if (job.jobClass !== "dispatch" && job.jobClass !== "task") {
+    throw new Error(`Job ${job.id} is a ${job.kindLabel} job. Only dispatch and rescue jobs can be resumed.`);
+  }
+  if (isActiveJobStatus(job.status)) {
+    throw new Error(`Job ${job.id} is still ${job.status}. Wait for it to finish before sending a follow-up.`);
+  }
+  if (!job.threadId) {
+    throw new Error(`Job ${job.id} has no Codex thread to resume.`);
+  }
+  const busy = listJobs(workspaceRoot).find((other) => other.threadId === job.threadId && isActiveJobStatus(other.status));
+  if (busy) {
+    throw new Error(`Codex thread ${job.threadId} is busy with job ${busy.id}. Wait for it before sending a follow-up.`);
+  }
+  return job;
+}
+
+async function handleDispatch(argv) {
+  const { options: cliOptions, positionals } = parseCommandInput(argv, {
+    valueOptions: [...DISPATCH_DIRECTIVE_OPTIONS.valueOptions, "prompt-file"],
+    booleanOptions: [...DISPATCH_DIRECTIVE_OPTIONS.booleanOptions, "json"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const rawPrompt = readTaskPrompt(resolveCommandCwd(cliOptions), cliOptions, positionals);
+  const { options: directives, prompt: taskText } = splitDispatchDirectives(rawPrompt);
+  // Explicit command-line flags win over the prompt's directive line.
+  const options = { ...directives, ...cliOptions };
+
+  if (options["read-only"] && options.write) {
+    throw new Error("Choose either --read-only or --write.");
+  }
+  const write = !options["read-only"];
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const timeoutMs = parseDuration(options.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
+  const task = taskText.trim();
+
+  const resumed = options.resume ? resolveDispatchResumeJob(cwd, options.resume) : null;
+  if (!task && !resumed) {
+    throw new Error("Provide the task for Codex as the prompt, a --prompt-file, or piped stdin.");
+  }
+  ensureCodexAvailable(cwd);
+
+  const label = options.label?.trim() || resumed?.label || null;
+  const followUpTask = task || DEFAULT_CONTINUE_PROMPT;
+  const prompt = options.raw
+    ? followUpTask
+    : buildDispatchPrompt(ROOT_DIR, { task: followUpTask, write, followUp: Boolean(resumed) });
+
+  const job = {
+    ...createCompanionJob({
+      prefix: "dispatch",
+      kind: "dispatch",
+      title: label ? `Codex Dispatch: ${label}` : "Codex Dispatch",
+      workspaceRoot,
+      jobClass: "dispatch",
+      summary: shorten(label ? `${label}: ${followUpTask}` : followUpTask),
+      write
+    }),
+    label,
+    ...(resumed ? { resumedFrom: resumed.id } : {})
+  };
+  enqueueBackgroundTask(cwd, job, {
+    dispatch: true,
+    cwd,
+    model,
+    effort,
+    prompt,
+    task: followUpTask,
+    label,
+    write,
+    resumeThreadId: resumed?.threadId ?? null,
+    resumedFrom: resumed?.id ?? null,
+    jobId: job.id
+  });
+
+  if (timeoutMs === 0) {
+    const next = buildDispatchWaitCommand(workspaceRoot, job.id);
+    outputCommandResult(
+      { jobId: job.id, status: "queued", next },
+      `Codex dispatch ${job.id} started${resumed ? ` (follow-up to ${resumed.id})` : ""}.\nNEXT: ${next}\n`,
+      options.json
+    );
+    return;
+  }
+
+  await waitAndRenderDispatch(cwd, job.id, timeoutMs, { json: options.json });
+}
+
+async function handleWait(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "timeout"],
+    booleanOptions: ["json", "no-cancel-on-exit"]
+  });
+
+  const reference = positionals[0];
+  if (!reference) {
+    throw new Error("Usage: wait <job-id> [--timeout <90s|5m|none>]");
+  }
+  const timeoutMs = parseDuration(options.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
+  await waitAndRenderDispatch(resolveCommandCwd(options), reference, timeoutMs, {
+    json: options.json,
+    cancelOnSignal: !options["no-cancel-on-exit"]
+  });
 }
 
 async function handleStatus(argv) {
@@ -960,15 +1259,7 @@ function handleTaskResumeCandidate(argv) {
   outputCommandResult(payload, rendered, options.json);
 }
 
-async function handleCancel(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-
-  const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
+async function cancelJob(cwd, workspaceRoot, job, reason = "Cancelled by user.") {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
@@ -984,7 +1275,7 @@ async function handleCancel(argv) {
   }
 
   terminateProcessTree(job.pid ?? Number.NaN);
-  appendLogLine(job.logFile, "Cancelled by user.");
+  appendLogLine(job.logFile, reason);
 
   const completedAt = nowIso();
   const nextJob = {
@@ -993,7 +1284,7 @@ async function handleCancel(argv) {
     phase: "cancelled",
     pid: null,
     completedAt,
-    errorMessage: "Cancelled by user."
+    errorMessage: reason
   };
 
   writeJobFile(workspaceRoot, job.id, {
@@ -1006,9 +1297,23 @@ async function handleCancel(argv) {
     status: "cancelled",
     phase: "cancelled",
     pid: null,
-    errorMessage: "Cancelled by user.",
+    errorMessage: reason,
     completedAt
   });
+
+  return { nextJob, interrupt };
+}
+
+async function handleCancel(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const reference = positionals[0] ?? "";
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
+  const { nextJob, interrupt } = await cancelJob(cwd, workspaceRoot, job);
 
   const payload = {
     jobId: job.id,
@@ -1042,6 +1347,12 @@ async function main() {
       break;
     case "task":
       await handleTask(argv);
+      break;
+    case "dispatch":
+      await handleDispatch(argv);
+      break;
+    case "wait":
+      await handleWait(argv);
       break;
     case "transfer":
       await handleTransfer(argv);

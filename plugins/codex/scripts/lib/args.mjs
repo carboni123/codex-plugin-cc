@@ -1,6 +1,8 @@
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
+  // Repeatable value options collect every occurrence into an array.
+  const arrayOptions = new Set(config.arrayOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
   const options = {};
   const positionals = [];
@@ -33,12 +35,12 @@ export function parseArgs(argv, config = {}) {
         continue;
       }
 
-      if (valueOptions.has(key)) {
+      if (valueOptions.has(key) || arrayOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === undefined) {
           throw new Error(`Missing value for --${rawKey}`);
         }
-        options[key] = nextValue;
+        options[key] = arrayOptions.has(key) ? [...(options[key] ?? []), nextValue] : nextValue;
         if (inlineValue === undefined) {
           index += 1;
         }

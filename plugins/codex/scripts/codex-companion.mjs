@@ -25,17 +25,23 @@ import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import {
   buildDispatchPrompt,
   buildDispatchThreadName,
+  describeSandbox,
   DEFAULT_DISPATCH_TIMEOUT_MS,
   DISPATCH_DIRECTIVE_OPTIONS,
+  DISPATCH_THREAD_CONFIG,
   parseDuration,
   renderDispatchPending,
   renderDispatchReport,
   renderDispatchUnfinished,
+  resolveDispatchNetwork,
+  resolveDispatchSandbox,
+  resolveDispatchWritableRoots,
   splitDispatchDirectives,
   summarizeCommands,
   summarizeFileChanges
 } from "./lib/dispatch.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
+import { diffWorkingTreeSnapshots, mergeFileChanges, snapshotWorkingTree } from "./lib/worktree-snapshot.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -559,13 +565,22 @@ async function executeDispatchRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureCodexAvailable(request.cwd);
 
+  const sandbox =
+    request.sandbox ??
+    resolveDispatchSandbox({ write: request.write, network: request.network, workspaceRoot });
   const startedAt = Date.now();
-  const result = await runAppServerTurn(workspaceRoot, {
+  const treeBefore = snapshotWorkingTree(workspaceRoot);
+  // A direct app-server: its working directory decides what a workspace-write sandbox may
+  // write, and a reviewer run needs it to be the scratch directory, not the repository.
+  const result = await runAppServerTurn(sandbox.serverCwd, {
     resumeThreadId: request.resumeThreadId ?? null,
     prompt: request.prompt,
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: sandbox.policy.type === "readOnly" ? "read-only" : "workspace-write",
+    sandboxPolicy: sandbox.policy,
+    threadConfig: DISPATCH_THREAD_CONFIG,
+    directAppServer: true,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: request.resumeThreadId ? null : buildDispatchThreadName(request.label, request.task)
@@ -581,11 +596,16 @@ async function executeDispatchRun(request) {
     label: request.label ?? null,
     resumedFrom: request.resumedFrom ?? null,
     write: Boolean(request.write),
-    cwd: workspaceRoot,
+    network: Boolean(request.network),
+    sandbox: describeSandbox(sandbox),
+    cwd: sandbox.serverCwd,
     durationMs: Date.now() - startedAt,
     finalMessage,
     error,
-    files: summarizeFileChanges(result.fileChanges, workspaceRoot),
+    files: mergeFileChanges(
+      diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(workspaceRoot)),
+      summarizeFileChanges(result.fileChanges, workspaceRoot)
+    ),
     commands: summarizeCommands(result.commandExecutions),
     reasoningSummary: result.reasoningSummary
   };
@@ -1095,8 +1115,9 @@ function resolveDispatchResumeJob(cwd, reference) {
 
 async function handleDispatch(argv) {
   const { options: cliOptions, positionals } = parseCommandInput(argv, {
-    valueOptions: [...DISPATCH_DIRECTIVE_OPTIONS.valueOptions, "prompt-file"],
+    valueOptions: [...DISPATCH_DIRECTIVE_OPTIONS.valueOptions, "timeout"],
     booleanOptions: [...DISPATCH_DIRECTIVE_OPTIONS.booleanOptions, "json"],
+    arrayOptions: DISPATCH_DIRECTIVE_OPTIONS.arrayOptions,
     aliasMap: {
       m: "model"
     }
@@ -1106,29 +1127,46 @@ async function handleDispatch(argv) {
   const { options: directives, prompt: taskText } = splitDispatchDirectives(rawPrompt);
   // Explicit command-line flags win over the prompt's directive line.
   const options = { ...directives, ...cliOptions };
-
-  if (options["read-only"] && options.write) {
-    throw new Error("Choose either --read-only or --write.");
-  }
-  const write = !options["read-only"];
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const model = normalizeRequestedModel(options.model ?? process.env[DISPATCH_MODEL_ENV]);
-  const effort = normalizeReasoningEffort(options.effort ?? process.env[DISPATCH_EFFORT_ENV]);
-  const timeoutMs = parseDuration(options.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
-  const task = taskText.trim();
+  const timeoutMs = parseDuration(cliOptions.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
 
+  let task = taskText.trim();
+  if (directives["prompt-file"]) {
+    if (task) {
+      throw new Error("Use either --prompt-file or inline task text, not both.");
+    }
+    task = fs.readFileSync(path.resolve(cwd, directives["prompt-file"]), "utf8").trim();
+  }
+
+  // A follow-up continues the same work: unless its directives say otherwise, it keeps the
+  // sandbox, network, writable roots, model, effort, and prompt framing of the run it resumes.
   const resumed = options.resume ? resolveDispatchResumeJob(cwd, options.resume) : null;
   if (!task && !resumed) {
     throw new Error("Provide the task for Codex as the prompt, a --prompt-file, or piped stdin.");
   }
+  const prior = resumed ? readStoredJob(workspaceRoot, resumed.id)?.request ?? {} : {};
+
+  if (options["read-only"] && options.write) {
+    throw new Error("Choose either --read-only or --write.");
+  }
+  const write = options["read-only"] ? false : options.write ? true : prior.write ?? true;
+  const inheritNetwork = prior.network != null && prior.write === write;
+  const network = inheritNetwork && !options.network && !options["no-network"] ? prior.network : resolveDispatchNetwork(options, write);
+  const writableRoots = options["writable-root"]
+    ? resolveDispatchWritableRoots(options, cwd)
+    : prior.writableRoots ?? resolveDispatchWritableRoots({}, cwd);
+  const sandbox = resolveDispatchSandbox({ write, network, writableRoots, workspaceRoot });
+  const model = normalizeRequestedModel(options.model ?? prior.model ?? process.env[DISPATCH_MODEL_ENV]);
+  const effort = normalizeReasoningEffort(options.effort ?? prior.effort ?? process.env[DISPATCH_EFFORT_ENV]);
+  const raw = Boolean(options.raw ?? prior.raw);
   ensureCodexAvailable(cwd);
 
   const label = options.label?.trim() || resumed?.label || null;
   const followUpTask = task || DEFAULT_CONTINUE_PROMPT;
-  const prompt = options.raw
+  const prompt = raw
     ? followUpTask
-    : buildDispatchPrompt(ROOT_DIR, { task: followUpTask, write, followUp: Boolean(resumed) });
+    : buildDispatchPrompt(ROOT_DIR, { task: followUpTask, sandbox, network, workspaceRoot, followUp: Boolean(resumed) });
 
   const job = {
     ...createCompanionJob({
@@ -1152,6 +1190,10 @@ async function handleDispatch(argv) {
     task: followUpTask,
     label,
     write,
+    network,
+    writableRoots,
+    sandbox,
+    raw,
     resumeThreadId: resumed?.threadId ?? null,
     resumedFrom: resumed?.id ?? null,
     jobId: job.id

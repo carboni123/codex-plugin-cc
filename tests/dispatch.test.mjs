@@ -105,7 +105,7 @@ test("long runs list the last run of each verification command plus the most rec
     "  ✗ npm run lint (exit 1)",
     ...Array.from({ length: 5 }, (_, index) => `  ✓ cat out${index} (exit 0)`)
   ]);
-  assert.match(rendered, /Commands run: 20 \(2 with non-zero exit\)\n {2}\(showing 7:/);
+  assert.match(rendered, /Commands reported: 20, 2 with non-zero exit \(commands and edits the sandbox refused are not reported\)\n {2}\(showing 7:/);
 });
 
 test("summarizeCommands unwraps the login shell and flags failures", () => {
@@ -136,7 +136,7 @@ test("renderDispatchReport separates Codex's message from runtime evidence", () 
   assert.match(rendered, /^Codex did not return a final message\. Error: turn interrupted/);
   assert.match(rendered, /Status: failed · 1m 5s · job dispatch-1 · thread thr_9/);
   assert.match(rendered, /Error: turn interrupted/);
-  assert.match(rendered, /Files changed: none/);
+  assert.match(rendered, /Files changed during the run: none/);
   assert.match(rendered, /✗ npm test \(exit 1\)/);
   assert.match(rendered, /--resume dispatch-1/);
 });
@@ -152,7 +152,7 @@ test("dispatch runs Codex as a delegated worker and appends runtime evidence", (
   assert.match(result.stdout, /modified: src\/app\.js\n {2}added: src\/new\.js/);
   assert.match(
     result.stdout,
-    /Commands run: 3 \(1 with non-zero exit\)\n {2}✗ npm test \(exit 1\)\n {2}✓ npm test \(exit 0\)\n {2}✓ rg -n handler src \(exit 0\)/
+    /Commands reported: 3, 1 with non-zero exit \(commands and edits the sandbox refused are not reported\)\n {2}✗ npm test \(exit 1\)\n {2}✓ npm test \(exit 0\)\n {2}✓ rg -n handler src \(exit 0\)/
   );
 
   const state = ctx.readFakeState();
@@ -174,7 +174,7 @@ test("dispatch --read-only uses the read-only sandbox and tells Codex not to edi
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Sandbox: read-only/);
-  assert.match(result.stdout, /Files changed: none \(read-only run\)/);
+  assert.match(result.stdout, /Files changed during the run: none \(read-only run\)/);
   const state = ctx.readFakeState();
   assert.equal(state.lastThreadStart.sandbox, "read-only");
   assert.match(state.lastTurnStart.prompt, /This run is read-only/);
@@ -308,4 +308,157 @@ test("dispatch defaults to CODEX_DISPATCH_MODEL/EFFORT and the directive line ov
   assert.equal(overridden.status, 0, overridden.stderr);
   assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6-luna");
   assert.equal(ctx.readFakeState().lastTurnStart.effort, "max");
+});
+
+test("dispatch gives write runs network access and keeps read-only runs offline by default", () => {
+  const ctx = setupRepo("task-ok");
+
+  assert.equal(companion(["dispatch", "Run the integration tests."], ctx).status, 0);
+  let state = ctx.readFakeState();
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy, {
+    type: "workspaceWrite",
+    writableRoots: [],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false
+  });
+  assert.deepEqual(state.lastThreadStart.config, { allow_login_shell: false });
+  assert.match(state.lastTurnStart.prompt, /Network access is on/);
+
+  const readOnly = companion(["dispatch"], ctx, "--read-only\nExplain the retry logic.");
+  assert.match(readOnly.stdout, /Sandbox: read-only · network off/);
+  state = ctx.readFakeState();
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: false });
+  assert.match(state.lastTurnStart.prompt, /Network access is off/);
+});
+
+test("dispatch --network and --no-network override the sandbox default", () => {
+  const ctx = setupRepo("task-ok");
+
+  assert.equal(companion(["dispatch"], ctx, "--read-only --network\nQuery the local test database.").status, 0);
+  assert.deepEqual(ctx.readFakeState().lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: true });
+
+  assert.equal(companion(["dispatch"], ctx, "--no-network\nRefactor the parser.").status, 0);
+  assert.equal(ctx.readFakeState().lastTurnStart.sandboxPolicy.networkAccess, false);
+
+  const conflict = companion(["dispatch"], ctx, "--network --no-network\nRefactor the parser.");
+  assert.equal(conflict.status, 1);
+  assert.match(conflict.stderr, /Choose either --network or --no-network/);
+});
+
+test("follow-up dispatches keep the non-login shell config", () => {
+  const ctx = setupRepo("task-ok");
+  const first = JSON.parse(companion(["dispatch", "--json", "Refactor the parser."], ctx).stdout);
+  assert.equal(companion(["dispatch", "--resume", first.jobId, "follow up: add tests"], ctx).status, 0);
+  assert.deepEqual(ctx.readFakeState().lastThreadResume.config, { allow_login_shell: false });
+});
+
+test("a follow-up inherits the resumed run's sandbox, network, model, effort, and framing", () => {
+  const ctx = setupRepo("task-ok");
+  const first = JSON.parse(
+    companion(["dispatch", "--json"], ctx, "--read-only --network --model astra --effort max --raw\nAudit the cache.").stdout
+  );
+
+  // A relay forwards only the follow-up message; it must not silently become a write run.
+  const followUp = companion(["dispatch", "--resume", first.jobId, "follow up: check the eviction path too"], ctx);
+  assert.equal(followUp.status, 0, followUp.stderr);
+  const state = ctx.readFakeState();
+  assert.equal(state.lastThreadResume.sandbox, "read-only");
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: true });
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.effort, "max");
+  assert.equal(state.lastTurnStart.prompt, "follow up: check the eviction path too");
+
+  const overridden = companion(["dispatch", "--resume", followUp.stdout.match(/--resume (dispatch-\S+)/)[1]], ctx, "--write\nnow apply the fix");
+  assert.equal(overridden.status, 0, overridden.stderr);
+  assert.equal(ctx.readFakeState().lastTurnStart.sandboxPolicy.type, "workspaceWrite");
+  assert.equal(ctx.readFakeState().lastTurnStart.sandboxPolicy.networkAccess, true);
+});
+
+test("dispatch reads the task from a --prompt-file directive", () => {
+  const ctx = setupRepo("task-ok");
+  const assignment = "# Assignment L3\nReport in the format below.\nCODEX_DISPATCH_PROMPT_EOF is just text here.\n";
+  fs.writeFileSync(path.join(ctx.repo, "assignment.md"), assignment);
+
+  const result = companion(["dispatch"], ctx, "--prompt-file assignment.md --raw --label L3\n");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(ctx.readFakeState().lastTurnStart.prompt, assignment.trim());
+
+  const both = companion(["dispatch"], ctx, "--prompt-file assignment.md\nAlso do this.");
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /either --prompt-file or inline task text/);
+});
+
+test("--timeout is not accepted as a directive", () => {
+  const ctx = setupRepo("task-ok");
+  const result = companion(["dispatch"], ctx, "--timeout 10m\nRun the slow suite.");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unsupported dispatch directive: --timeout/);
+});
+
+test("--writable-root adds directories a write run may change", () => {
+  const ctx = setupRepo("task-ok");
+  const scratch = fs.realpathSync(makeTempDir());
+  const result = companion(["dispatch"], ctx, `--writable-root ${scratch}\nGenerate fixtures.`);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`Sandbox: workspace-write \\+ ${scratch} · network on`));
+  const state = ctx.readFakeState();
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy.writableRoots, [scratch]);
+  assert.match(state.lastTurnStart.prompt, new RegExp(`You may also write in: ${scratch}`));
+});
+
+test("a read-only run with a writable root keeps the repository read-only and runs from the scratch directory", () => {
+  const ctx = setupRepo("task-ok");
+  const scratch = fs.realpathSync(makeTempDir());
+  const result = companion(["dispatch"], ctx, `--read-only --writable-root ${scratch} --network\nReview the branch; put notes in the scratch dir.`);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`Sandbox: read-only repository, writable: ${scratch} · network on · cwd: ${scratch}`));
+  const state = ctx.readFakeState();
+  assert.equal(state.lastThreadStart.cwd, scratch);
+  // The test repository lives under /tmp, so /tmp must not be writable.
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy, {
+    type: "workspaceWrite",
+    writableRoots: [],
+    networkAccess: true,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true
+  });
+  assert.match(state.lastTurnStart.prompt, new RegExp(`repository at ${fs.realpathSync(ctx.repo)} is read-only`));
+});
+
+test("a writable root that contains the repository or does not exist is rejected", () => {
+  const ctx = setupRepo("task-ok");
+  const parent = companion(["dispatch"], ctx, `--read-only --writable-root ${path.dirname(ctx.repo)}\nReview.`);
+  assert.equal(parent.status, 1);
+  assert.match(parent.stderr, /contains the repository/);
+
+  const missing = companion(["dispatch"], ctx, "--writable-root ./no-such-dir\nWrite fixtures.");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /is not an existing directory/);
+});
+
+test("CODEX_DISPATCH_NETWORK and CODEX_DISPATCH_WRITABLE_ROOTS set defaults that directives override", () => {
+  const ctx = setupRepo("task-ok");
+  const scratch = fs.realpathSync(makeTempDir());
+  const env = { ...ctx.env, CODEX_DISPATCH_NETWORK: "off", CODEX_DISPATCH_WRITABLE_ROOTS: scratch };
+
+  assert.equal(companion(["dispatch", "Refactor."], { ...ctx, env }).status, 0);
+  let policy = ctx.readFakeState().lastTurnStart.sandboxPolicy;
+  assert.equal(policy.networkAccess, false);
+  assert.deepEqual(policy.writableRoots, [scratch]);
+
+  assert.equal(companion(["dispatch"], { ...ctx, env }, "--network\nRun the database tests.").status, 0);
+  assert.equal(ctx.readFakeState().lastTurnStart.sandboxPolicy.networkAccess, true);
+});
+
+test("command evidence unwraps non-login shells and shows multi-line scripts on one line", () => {
+  const [single, script] = summarizeCommands([
+    { command: "/bin/bash -c ls", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c 'printf hi > a.txt\nrm b.txt\nls'", exitCode: 0, status: "completed" }
+  ]);
+  assert.equal(single.command, "ls");
+  const rendered = renderDispatchReport({ status: "completed", jobId: "d", write: true, cwd: "/r", finalMessage: "ok", files: [], commands: [single, script] });
+  assert.match(rendered, /✓ printf hi > a\.txt; rm b\.txt; ls \(exit 0\)/);
 });

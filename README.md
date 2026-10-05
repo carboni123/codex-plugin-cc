@@ -259,12 +259,18 @@ Find every place the session token is parsed and check each one for missing expi
 | Directive | Effect |
 | --- | --- |
 | `--read-only` | Read-only sandbox, for investigation and research. Without it, the run is write-capable, like a `general-purpose` subagent. |
+| `--writable-root <dir>` | An extra directory Codex may write; repeat it for more. On a write run, it adds to the repository. On a `--read-only` run, the repository stays read-only and Codex runs from the first writable root. That makes a reviewer setup: read-only code, a writable scratch directory, and `--network` for loopback services. |
+| `--prompt-file <path>` | Read the task from a file, relative to the repository. Then the first line is the whole prompt, so the relay forwards one line instead of retyping a long assignment. Also use this when a task contains the line `CODEX_DISPATCH_PROMPT_EOF`, which the relay cannot forward inline. |
+| `--cwd <dir>` | Run in another directory or repository |
+| `--network` / `--no-network` | Turn network access on or off: loopback ports, local services, Docker, and the internet. Write runs default to on, like a Claude subagent. Read-only runs default to off, because network access reaches local services and the Docker socket, through which a read-only run could still change state. |
 | `--effort <low\|medium\|high\|xhigh\|max\|ultra>` | Codex reasoning effort (supported levels depend on the model) |
 | `--model <name\|sol\|astra\|spark>` | Codex model. Aliases: `sol` = `gpt-6.1-sol`, `astra` = `gpt-6-astra`, `spark` = `gpt-5.3-codex-spark` |
 | `--label <name>` | Name shown in `/codex:status` and the Codex thread list |
 | `--raw` | Send the prompt without the delegated-worker contract described below |
 
-Without `--model` or `--effort`, a dispatch uses `CODEX_DISPATCH_MODEL` / `CODEX_DISPATCH_EFFORT` if set, and otherwise Codex's own config (`~/.codex/config.toml`). To make every dispatch default to high effort, set the variable in the `env` block of `~/.claude/settings.json`:
+A follow-up (a message to the same agent, or `--resume <job-id>`) keeps the sandbox, network, writable roots, model, effort, and `--raw` setting of the run it continues, unless its own first line changes them.
+
+Without a directive, a dispatch falls back to these environment variables, then to the defaults above and to Codex's own config (`~/.codex/config.toml`) for model and effort: `CODEX_DISPATCH_MODEL`, `CODEX_DISPATCH_EFFORT`, `CODEX_DISPATCH_NETWORK` (`on`/`off`), and `CODEX_DISPATCH_WRITABLE_ROOTS` (paths separated by `:`). To make every dispatch default to high effort, set the variable in the `env` block of `~/.claude/settings.json`:
 
 ```json
 { "env": { "CODEX_DISPATCH_EFFORT": "high" } }
@@ -282,11 +288,11 @@ Without `--model` or `--effort`, a dispatch uses `CODEX_DISPATCH_MODEL` / `CODEX
 ---
 Codex dispatch evidence (observed by the plugin runtime, not written by Codex):
 Status: completed · 4m 12s · job dispatch-mg2k1c-x81 · thread thr_19
-Sandbox: workspace-write · cwd: /repo
-Files changed (2):
+Sandbox: workspace-write · network on · cwd: /repo
+Files changed during the run (2):
   modified: src/auth/session.ts
   added: src/auth/session.test.ts
-Commands run: 14 (2 with non-zero exit)
+Commands reported: 14, 2 with non-zero exit (commands and edits the sandbox refused are not reported)
   (showing 6: the last run of each test/build/lint command and the last 5 commands)
   ✓ npm test -- session (exit 0)
   ✓ git diff --stat (exit 0)
@@ -297,7 +303,13 @@ Commands run: 14 (2 with non-zero exit)
 Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k1c-x81
 ```
 
+"Files changed during the run" comes from comparing `git status` (with content hashes) before and after the run, merged with the edits Codex's patch tool reports. It catches files written by shell commands, formatters, or generators too. It also includes anything else that changed the working tree during the run, so give parallel write dispatches their own worktree (`isolation: "worktree"`).
+
+The command list comes from Codex's app-server event stream. That stream sends nothing for a command or an edit the sandbox refuses, so the list can be shorter than what Codex attempted; Codex's own session log under `~/.codex/sessions` has every call.
+
 Claude can check Codex's claims against this block. If the report says "tests pass" but the evidence shows a failing test run, Claude can see the mismatch.
+
+**Shell environment.** Dispatched runs use a non-login shell, so Codex's commands see the same `PATH` as Claude Code's Bash tool. Codex's default login shell re-reads `/etc/profile`, which on Debian and Ubuntu rebuilds `PATH` and drops tools installed through version managers like nvm.
 
 **Long runs and stopping.** Each dispatch is a tracked background job, so it shows up in `/codex:status`, `/codex:result`, and `/codex:cancel`. The relay checks in about every 100 seconds, so recent Codex activity shows up in the agent's transcript while it works. Stopping the agent stops Codex too: when the waiting process is terminated, the job is cancelled and the Codex turn interrupted.
 

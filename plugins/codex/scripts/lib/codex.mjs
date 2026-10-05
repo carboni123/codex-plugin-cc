@@ -67,7 +67,8 @@ function buildThreadParams(cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
-    ephemeral: options.ephemeral ?? true
+    ephemeral: options.ephemeral ?? true,
+    ...(options.config ? { config: options.config } : {})
   };
 }
 
@@ -78,7 +79,8 @@ function buildResumeParams(threadId, cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only"
+    sandbox: options.sandbox ?? "read-only",
+    ...(options.config ? { config: options.config } : {})
   };
 }
 
@@ -560,7 +562,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
 
+  // Debug aid: CODEX_COMPANION_EVENT_LOG=<file> appends every app-server notification as JSON.
+  const eventLog = process.env.CODEX_COMPANION_EVENT_LOG;
   client.setNotificationHandler((message) => {
+    if (eventLog) {
+      fs.appendFileSync(eventLog, `${JSON.stringify(message)}\n`);
+    }
     if (!state.turnId) {
       state.bufferedNotifications.push(message);
       return;
@@ -1098,7 +1105,8 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
+  const connect = options.directAppServer ? withDirectAppServer : withAppServer;
+  return connect(cwd, async (client) => {
     let threadId;
 
     if (options.resumeThreadId) {
@@ -1106,6 +1114,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
         sandbox: options.sandbox,
+        config: options.threadConfig,
         ephemeral: false
       });
       threadId = response.thread.id;
@@ -1114,6 +1123,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       const response = await startThread(client, cwd, {
         model: options.model,
         sandbox: options.sandbox,
+        config: options.threadConfig,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });
@@ -1138,7 +1148,8 @@ export async function runAppServerTurn(cwd, options = {}) {
           input: buildTurnInput(prompt),
           model: options.model ?? null,
           effort: options.effort ?? null,
-          outputSchema: options.outputSchema ?? null
+          outputSchema: options.outputSchema ?? null,
+          ...(options.sandboxPolicy ? { sandboxPolicy: options.sandboxPolicy } : {})
         }),
       { onProgress: options.onProgress }
     );

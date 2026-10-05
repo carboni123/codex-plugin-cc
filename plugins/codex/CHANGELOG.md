@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0
+
+- Network access for dispatches, set per turn through the sandbox policy: on by default for write runs (loopback services, fake servers, Docker), off for read-only runs. Override with `--network` / `--no-network` or `CODEX_DISPATCH_NETWORK`
+- Dispatched runs use a non-login shell, so Codex's commands keep Claude Code's `PATH`. Codex's login shell re-reads `/etc/profile`, which on Debian and Ubuntu drops nvm-installed tools such as `npx` and `pnpm`
+- `--writable-root <dir>` (repeatable, or `CODEX_DISPATCH_WRITABLE_ROOTS`). On a read-only run it creates a reviewer setup: the repository stays read-only and Codex runs from the scratch directory
+- `--prompt-file <path>` as a directive, so the relay forwards one line instead of retyping long assignments
+- Fix: a follow-up dispatch keeps the sandbox, network, writable roots, model, effort, and `--raw` of the run it continues. Before, a follow-up to a read-only dispatch resumed write-capable
+- Evidence: changed files now come from a git working-tree diff merged with patch events, which catches shell-written files. The command list states that sandbox-refused actions are not reported (the app-server emits no event for them)
+- `--timeout` is no longer a directive: a value above the relay's Bash timeout got the relay killed, which cancelled the Codex turn
+- The agent description documents every directive, including `--raw` and `--cwd`. `CODEX_COMPANION_EVENT_LOG=<file>` records raw app-server events for debugging
+
 ## 1.1.2
 
 - Add model aliases `sol` (`gpt-6.1-sol`) and `astra` (`gpt-6-astra`)

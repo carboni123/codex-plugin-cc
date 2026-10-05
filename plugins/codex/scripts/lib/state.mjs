@@ -38,9 +38,47 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
+  return path.join(resolveStateRoot(), `${slug}-${hash}`);
+}
+
+export function resolveStateRoot() {
   const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`);
+  return pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
+}
+
+/**
+ * Jobs recorded for every workspace except `workspaceRoot`. State is kept per workspace, so a
+ * job started with --cwd, or from a worktree, is invisible from the main checkout without this.
+ * Each job carries the workspaceRoot it belongs to.
+ */
+export function listJobsInOtherWorkspaces(workspaceRoot) {
+  const ownStateDir = resolveStateDir(workspaceRoot);
+  const stateRoot = resolveStateRoot();
+  let entries = [];
+  try {
+    entries = fs.readdirSync(stateRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const jobs = [];
+  for (const entry of entries) {
+    const stateDir = path.join(stateRoot, entry.name);
+    if (!entry.isDirectory() || stateDir === ownStateDir) {
+      continue;
+    }
+    try {
+      const state = JSON.parse(fs.readFileSync(path.join(stateDir, STATE_FILE_NAME), "utf8"));
+      for (const job of Array.isArray(state.jobs) ? state.jobs : []) {
+        if (job?.id && job.workspaceRoot) {
+          jobs.push(job);
+        }
+      }
+    } catch {
+      // A missing or corrupt state file in another workspace is not this workspace's problem.
+    }
+  }
+  return jobs;
 }
 
 export function resolveStateFile(cwd) {

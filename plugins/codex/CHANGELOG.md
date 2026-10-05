@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0
+
+- `--worktree` dispatch directive: Codex works in its own git worktree, on a new `codex-dispatch/<job>` branch from the current commit, kept in the plugin's state directory. The report gives the path, branch, and commands to keep (commit and merge) or discard the changes; an unchanged worktree and its branch are removed. Follow-ups continue in the same worktree, and evidence is taken from the worktree
+- Jobs are found across workspaces: `/codex:status <id>`, `/codex:result <id>`, `/codex:cancel <id>`, `wait <id>`, and `dispatch --resume <id>` fall back to every workspace's state when the id is not local. `/codex:status` lists this session's jobs from other workspaces, marked with their workspace
+- Cancelling sends the turn interrupt through the job's own workspace, not the caller's
+- `/codex:result <id>` on a running job now says it is still running instead of "No job found"
+- Cross-workspace lookup and plugin-managed worktrees adapted from github.com/dragon84867/codex-plugin-cc
+
 ## 1.2.1
 
 - Brokers shut down after 5 minutes without a client (`CODEX_COMPANION_BROKER_IDLE_MS`). Before, a broker for any workspace other than the session's own (`--cwd` runs, worktrees, test repositories) lived until reboot

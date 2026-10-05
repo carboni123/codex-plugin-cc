@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { parseArgs, splitRawArgumentString } from "./args.mjs";
+import { renderWorktreeLines } from "./dispatch-worktree.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./prompts.mjs";
 
 // Stays under Claude Code's default 2-minute Bash timeout, so a forwarding agent that
@@ -14,7 +15,7 @@ export const DISPATCH_THREAD_PREFIX = "Codex Dispatch";
 // Bash timeout, and a relay killed mid-wait cancels the Codex turn.
 export const DISPATCH_DIRECTIVE_OPTIONS = {
   valueOptions: ["model", "effort", "cwd", "label", "resume", "prompt-file"],
-  booleanOptions: ["read-only", "write", "raw", "network", "no-network"],
+  booleanOptions: ["read-only", "write", "raw", "network", "no-network", "worktree"],
   arrayOptions: ["writable-root"]
 };
 
@@ -87,7 +88,12 @@ export function resolveDispatchWritableRoots(options, cwd, env = process.env) {
  *   directory writable, so Codex runs from the first writable root and reads the repository
  *   by absolute path.
  */
-export function resolveDispatchSandbox({ write, network, writableRoots = [], workspaceRoot }) {
+export function resolveDispatchSandbox({ write, network, writableRoots = [], workspaceRoot, worktree = null }) {
+  if (worktree) {
+    // The worktree takes the repository's place: Codex runs there and the main checkout is
+    // outside its writable roots.
+    return { ...resolveDispatchSandbox({ write, network, writableRoots, workspaceRoot: worktree.path }), worktree };
+  }
   const workspaceWrite = (roots, excludeTmp) => ({
     type: "workspaceWrite",
     writableRoots: roots,
@@ -116,7 +122,8 @@ export function resolveDispatchSandbox({ write, network, writableRoots = [], wor
 
 export function describeSandbox(sandbox) {
   if (sandbox.mode === "write") {
-    return sandbox.writableRoots.length ? `workspace-write + ${sandbox.writableRoots.join(", ")}` : "workspace-write";
+    const base = sandbox.worktree ? "workspace-write in a worktree" : "workspace-write";
+    return sandbox.writableRoots.length ? `${base} + ${sandbox.writableRoots.join(", ")}` : base;
   }
   if (sandbox.mode === "read-only") {
     return "read-only";
@@ -135,10 +142,14 @@ const READ_ONLY_SANDBOX_RULES =
   "- This run is read-only: the sandbox blocks file edits. Investigate and report; describe the changes you would make instead of attempting them.";
 
 function sandboxRules(sandbox, workspaceRoot) {
+  const worktree = sandbox.worktree
+    ? `\n- You are working in a dedicated git worktree at ${sandbox.worktree.path} on branch ${sandbox.worktree.branch}. Edit files there; the main checkout at ${sandbox.worktree.repoRoot} is not yours to change.`
+    : "";
   if (sandbox.mode === "write") {
-    return sandbox.writableRoots.length
+    const rules = sandbox.writableRoots.length
       ? `${WRITE_SANDBOX_RULES}\n- You may also write in: ${sandbox.writableRoots.join(", ")}.`
       : WRITE_SANDBOX_RULES;
+    return `${rules}${worktree}`;
   }
   if (sandbox.mode === "read-only") {
     return READ_ONLY_SANDBOX_RULES;
@@ -176,7 +187,7 @@ export function splitDispatchDirectives(prompt) {
   if (positionals.length > 0) {
     throw new Error(
       `Unsupported dispatch directive: ${positionals.join(" ")}. The first prompt line only accepts ` +
-        "--read-only, --write, --network, --no-network, --writable-root, --prompt-file, --raw, --model, --effort, --cwd, --label, and --resume."
+        "--read-only, --write, --worktree, --network, --no-network, --writable-root, --prompt-file, --raw, --model, --effort, --cwd, --label, and --resume."
     );
   }
   return { options, prompt: text.slice(match[0].length) };
@@ -387,6 +398,7 @@ export function renderDispatchReport(report) {
   const network = report.network == null ? "" : ` · network ${report.network ? "on" : "off"}`;
   const sandbox = report.sandbox ?? (report.write ? "workspace-write" : "read-only");
   lines.push(`Sandbox: ${sandbox}${network} · cwd: ${report.cwd}`);
+  lines.push(...renderWorktreeLines(report.worktree));
   if (report.status !== "completed" && report.error) {
     lines.push(`Error: ${shorten(report.error, 400)}`);
   }
@@ -426,6 +438,10 @@ export function renderDispatchUnfinished(job, storedJob) {
     for (const line of job.progressPreview) {
       lines.push(`  - ${line}`);
     }
+  }
+  const worktree = storedJob?.request?.worktree;
+  if (worktree) {
+    lines.push(`Worktree (left in place): ${worktree.path} · branch ${worktree.branch}`);
   }
   if (job.logFile) {
     lines.push(`Log: ${job.logFile}`);

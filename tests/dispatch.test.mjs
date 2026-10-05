@@ -462,3 +462,89 @@ test("command evidence unwraps non-login shells and shows multi-line scripts on 
   const rendered = renderDispatchReport({ status: "completed", jobId: "d", write: true, cwd: "/r", finalMessage: "ok", files: [], commands: [single, script] });
   assert.match(rendered, /✓ printf hi > a\.txt; rm b\.txt; ls \(exit 0\)/);
 });
+
+test("jobs run in another workspace are found from this one by id, and listed for this session", () => {
+  const ctx = setupRepo("task-ok");
+  const other = makeTempDir();
+  initGitRepo(other);
+  const env = { ...ctx.env, CODEX_COMPANION_SESSION_ID: "sess-cross" };
+
+  const launched = JSON.parse(companion(["dispatch", "--json"], { ...ctx, env }, `--cwd ${other} --label elsewhere\nAudit the other repo.`).stdout);
+  assert.equal(launched.status, "completed");
+
+  // The job lives in the other workspace's state, yet this workspace resolves it by id.
+  assert.equal(companion(["result", launched.jobId, "--json"], { ...ctx, env }).status, 0);
+  const waited = JSON.parse(companion(["wait", launched.jobId, "--json"], { ...ctx, env }).stdout);
+  assert.equal(waited.status, "completed");
+
+  const status = JSON.parse(companion(["status", "--json"], { ...ctx, env }).stdout);
+  assert.equal(status.latestFinished.id, launched.jobId);
+  assert.equal(status.latestFinished.otherWorkspace, true);
+  assert.match(companion(["status"], { ...ctx, env }).stdout, new RegExp(`Workspace: ${other}`));
+
+  // Another session's jobs from other workspaces stay out of this session's status.
+  const foreign = JSON.parse(companion(["status", "--json"], { ...ctx, env: { ...ctx.env, CODEX_COMPANION_SESSION_ID: "sess-other" } }).stdout);
+  assert.equal(foreign.latestFinished, null);
+});
+
+test("a running job in another workspace can be cancelled from this one", () => {
+  const ctx = setupRepo("interruptible-slow-task");
+  const other = makeTempDir();
+  initGitRepo(other);
+
+  const launched = JSON.parse(companion(["dispatch", "--timeout", "0", "--json"], ctx, `--cwd ${other}\nRun the slow migration.`).stdout);
+  const cancelled = companion(["cancel", launched.jobId, "--json"], ctx);
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+  assert.equal(JSON.parse(cancelled.stdout).status, "cancelled");
+
+  const result = companion(["result", launched.jobId, "--json"], ctx);
+  assert.equal(JSON.parse(result.stdout).job.status, "cancelled");
+});
+
+test("--worktree runs Codex in its own worktree and branch, leaving the main checkout untouched", () => {
+  const ctx = setupRepo("with-file-write");
+  const result = companion(["dispatch", "--json"], ctx, "--worktree --label 'fix flaky test'\nFix the flaky test.");
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const worktree = payload.report.worktree;
+
+  assert.equal(worktree.removed, false);
+  assert.match(worktree.branch, new RegExp(`^codex-dispatch/${payload.jobId}-fix-flaky-test$`));
+  assert.equal(ctx.readFakeState().lastThreadStart.cwd, worktree.path);
+  assert.equal(fs.readFileSync(path.join(worktree.path, "codex-output.txt"), "utf8"), "written by fake codex\n");
+  assert.equal(fs.existsSync(path.join(ctx.repo, "codex-output.txt")), false);
+  assert.equal(run("git", ["status", "--porcelain"], { cwd: ctx.repo }).stdout, "");
+  assert.deepEqual(payload.report.files, [{ path: "codex-output.txt", change: "added" }]);
+
+  const rendered = companion(["result", payload.jobId], ctx).stdout;
+  assert.match(rendered, new RegExp(`Worktree: ${worktree.path} · branch ${worktree.branch}`));
+  assert.match(rendered, /Keep: git -C .+ add -A && git -C .+ commit -m "<message>" && git -C .+ merge codex-dispatch\//);
+
+  // The follow-up continues in the same worktree.
+  assert.equal(companion(["dispatch", "--resume", payload.jobId, "follow up: also update the docs"], ctx).status, 0);
+  assert.equal(ctx.readFakeState().lastThreadResume.cwd, worktree.path);
+  assert.equal(fs.readFileSync(path.join(worktree.path, "codex-output.txt"), "utf8"), "written by fake codex\n".repeat(2));
+});
+
+test("--worktree removes the worktree and branch when Codex changed nothing", () => {
+  const ctx = setupRepo("task-ok");
+  const payload = JSON.parse(companion(["dispatch", "--json"], ctx, "--worktree\nCheck whether the cache needs a fix.").stdout);
+  const worktree = payload.report.worktree;
+
+  assert.equal(worktree.removed, true);
+  assert.equal(fs.existsSync(worktree.path), false);
+  assert.equal(run("git", ["branch", "--list", worktree.branch], { cwd: ctx.repo }).stdout.trim(), "");
+  assert.match(companion(["result", payload.jobId], ctx).stdout, /\(removed: the run changed nothing\)/);
+});
+
+test("--worktree is refused for a new read-only run and outside a git repository", () => {
+  const ctx = setupRepo("task-ok");
+  const readOnly = companion(["dispatch"], ctx, "--read-only --worktree\nReview.");
+  assert.equal(readOnly.status, 1);
+  assert.match(readOnly.stderr, /--worktree is for write runs/);
+
+  const plain = makeTempDir();
+  const outside = companion(["dispatch"], ctx, `--cwd ${plain} --worktree\nFix it.`);
+  assert.equal(outside.status, 1);
+  assert.match(outside.stderr, /Could not start a worktree/);
+});

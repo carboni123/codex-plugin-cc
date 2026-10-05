@@ -348,7 +348,7 @@ rl.on("line", (line) => {
         }
         const thread = ensureThread(state, message.params.threadId);
         thread.updatedAt = now();
-        state.lastThreadResume = { threadId: thread.id, sandbox: message.params.sandbox ?? null, config: message.params.config ?? null };
+        state.lastThreadResume = { threadId: thread.id, cwd: message.params.cwd ?? null, sandbox: message.params.sandbox ?? null, config: message.params.config ?? null };
         saveState(state);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
         break;
@@ -456,6 +456,10 @@ rl.on("line", (line) => {
 	          prompt
 	        };
 	        saveState(state);
+	        if (BEHAVIOR === "with-file-write") {
+	          const runCwd = (state.lastThreadResume && state.lastThreadResume.threadId === thread.id && state.lastThreadResume.cwd) || thread.cwd;
+	          fs.appendFileSync(path.join(runCwd, "codex-output.txt"), "written by fake codex\\n");
+	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict

@@ -42,6 +42,7 @@ import {
 } from "./lib/dispatch.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { diffWorkingTreeSnapshots, mergeFileChanges, snapshotWorkingTree } from "./lib/worktree-snapshot.mjs";
+import { createDispatchWorktree, ensureDispatchWorktree, finishDispatchWorktree } from "./lib/dispatch-worktree.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -568,8 +569,10 @@ async function executeDispatchRun(request) {
   const sandbox =
     request.sandbox ??
     resolveDispatchSandbox({ write: request.write, network: request.network, workspaceRoot });
+  const worktree = request.worktree ?? null;
+  const treeRoot = worktree?.path ?? workspaceRoot;
   const startedAt = Date.now();
-  const treeBefore = snapshotWorkingTree(workspaceRoot);
+  const treeBefore = snapshotWorkingTree(treeRoot);
   // A direct app-server: its working directory decides what a workspace-write sandbox may
   // write, and a reviewer run needs it to be the scratch directory, not the repository.
   const result = await runAppServerTurn(sandbox.serverCwd, {
@@ -603,9 +606,10 @@ async function executeDispatchRun(request) {
     finalMessage,
     error,
     files: mergeFileChanges(
-      diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(workspaceRoot)),
-      summarizeFileChanges(result.fileChanges, workspaceRoot)
+      diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(treeRoot)),
+      summarizeFileChanges(result.fileChanges, treeRoot)
     ),
+    worktree: worktree ? finishDispatchWorktree(worktree) : null,
     commands: summarizeCommands(result.commandExecutions),
     reasoningSummary: result.reasoningSummary
   };
@@ -1036,7 +1040,7 @@ function cancelDispatchOnSignal(cwd, jobId) {
     handled = true;
     try {
       const { workspaceRoot, job } = resolveCancelableJob(cwd, jobId);
-      await cancelJob(cwd, workspaceRoot, job, `Cancelled because the waiting dispatch process received ${signal}.`);
+      await cancelJob(workspaceRoot, job, `Cancelled because the waiting dispatch process received ${signal}.`);
       process.stderr.write(`Cancelled Codex dispatch ${jobId} (${signal}).\n`);
     } catch {
       // The job already finished; nothing to cancel.
@@ -1156,18 +1160,16 @@ async function handleDispatch(argv) {
   const writableRoots = options["writable-root"]
     ? resolveDispatchWritableRoots(options, cwd)
     : prior.writableRoots ?? resolveDispatchWritableRoots({}, cwd);
-  const sandbox = resolveDispatchSandbox({ write, network, writableRoots, workspaceRoot });
   const model = normalizeRequestedModel(options.model ?? prior.model ?? process.env[DISPATCH_MODEL_ENV]);
   const effort = normalizeReasoningEffort(options.effort ?? prior.effort ?? process.env[DISPATCH_EFFORT_ENV]);
   const raw = Boolean(options.raw ?? prior.raw);
+  if (options.worktree && !write && !prior.worktree) {
+    throw new Error("--worktree is for write runs; a read-only run has nothing to isolate.");
+  }
   ensureCodexAvailable(cwd);
 
   const label = options.label?.trim() || resumed?.label || null;
   const followUpTask = task || DEFAULT_CONTINUE_PROMPT;
-  const prompt = raw
-    ? followUpTask
-    : buildDispatchPrompt(ROOT_DIR, { task: followUpTask, sandbox, network, workspaceRoot, followUp: Boolean(resumed) });
-
   const job = {
     ...createCompanionJob({
       prefix: "dispatch",
@@ -1181,6 +1183,23 @@ async function handleDispatch(argv) {
     label,
     ...(resumed ? { resumedFrom: resumed.id } : {})
   };
+
+  // A follow-up continues in the worktree of the run it resumes.
+  const worktree = prior.worktree
+    ? ensureDispatchWorktree(prior.worktree)
+    : options.worktree
+      ? createDispatchWorktree(workspaceRoot, job.id, label)
+      : null;
+  const sandbox = resolveDispatchSandbox({ write, network, writableRoots, workspaceRoot, worktree });
+  const prompt = raw
+    ? followUpTask
+    : buildDispatchPrompt(ROOT_DIR, {
+        task: followUpTask,
+        sandbox,
+        network,
+        workspaceRoot: worktree?.path ?? workspaceRoot,
+        followUp: Boolean(resumed)
+      });
   enqueueBackgroundTask(cwd, job, {
     dispatch: true,
     cwd,
@@ -1193,6 +1212,7 @@ async function handleDispatch(argv) {
     network,
     writableRoots,
     sandbox,
+    worktree,
     raw,
     resumeThreadId: resumed?.threadId ?? null,
     resumedFrom: resumed?.id ?? null,
@@ -1309,12 +1329,13 @@ function handleTaskResumeCandidate(argv) {
   outputCommandResult(payload, rendered, options.json);
 }
 
-async function cancelJob(cwd, workspaceRoot, job, reason = "Cancelled by user.") {
+async function cancelJob(workspaceRoot, job, reason = "Cancelled by user.") {
   const existing = readStoredJob(workspaceRoot, job.id) ?? {};
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
 
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
+  // The job's own workspace owns its broker, which may not be the caller's.
+  const interrupt = await interruptAppServerTurn(workspaceRoot, { threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,
@@ -1363,7 +1384,7 @@ async function handleCancel(argv) {
   const cwd = resolveCommandCwd(options);
   const reference = positionals[0] ?? "";
   const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  const { nextJob, interrupt } = await cancelJob(cwd, workspaceRoot, job);
+  const { nextJob, interrupt } = await cancelJob(workspaceRoot, job);
 
   const payload = {
     jobId: job.id,

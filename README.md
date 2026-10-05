@@ -245,7 +245,7 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 Agent(subagent_type: "codex:dispatch", description: "Fix flaky auth test", prompt: "...")
 ```
 
-Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, `isolation: "worktree"`, and follow-ups through `SendMessage`, which continue the same Codex thread. A Sonnet relay forwards the prompt verbatim and polls until Codex finishes; Codex does the work.
+Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, and follow-ups through `SendMessage`, which continue the same Codex thread. For parallel write runs, use the `--worktree` directive below rather than the Agent tool's `isolation: "worktree"`: the plugin then creates, reports, and cleans up the worktree itself. A Sonnet relay forwards the prompt verbatim and polls until Codex finishes; Codex does the work.
 
 To make Claude prefer it, say so in the conversation or in `CLAUDE.md`, for example: "Delegate implementation and research subagent work to `codex:dispatch`."
 
@@ -259,6 +259,7 @@ Find every place the session token is parsed and check each one for missing expi
 | Directive | Effect |
 | --- | --- |
 | `--read-only` | Read-only sandbox, for investigation and research. Without it, the run is write-capable, like a `general-purpose` subagent. |
+| `--worktree` | Run Codex in its own git worktree, on a new branch from the current commit, so parallel write dispatches cannot collide and the main checkout stays untouched. The worktree lives in the plugin's state directory. The report gives its path and branch with commands to keep (commit and merge) or discard the changes; if Codex changed nothing, the worktree and branch are removed. Follow-ups continue in the same worktree. |
 | `--writable-root <dir>` | An extra directory Codex may write; repeat it for more. On a write run, it adds to the repository. On a `--read-only` run, the repository stays read-only and Codex runs from the first writable root. That makes a reviewer setup: read-only code, a writable scratch directory, and `--network` for loopback services. |
 | `--prompt-file <path>` | Read the task from a file, relative to the repository. Then the first line is the whole prompt, so the relay forwards one line instead of retyping a long assignment. Also use this when a task contains the line `CODEX_DISPATCH_PROMPT_EOF`, which the relay cannot forward inline. |
 | `--cwd <dir>` | Run in another directory or repository |
@@ -303,7 +304,9 @@ Commands reported: 14, 2 with non-zero exit (commands and edits the sandbox refu
 Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k1c-x81
 ```
 
-"Files changed during the run" comes from comparing `git status` (with content hashes) before and after the run, merged with the edits Codex's patch tool reports. It catches files written by shell commands, formatters, or generators too. It also includes anything else that changed the working tree during the run, so give parallel write dispatches their own worktree (`isolation: "worktree"`).
+`/codex:status` also lists this session's dispatches that ran in another workspace (through `--cwd`, or from a worktree the Agent tool created), marked with that workspace; `/codex:status <id>`, `/codex:result <id>`, `/codex:cancel <id>`, and `wait <id>` find a job by id in any workspace.
+
+"Files changed during the run" comes from comparing `git status` (with content hashes) before and after the run, merged with the edits Codex's patch tool reports. It catches files written by shell commands, formatters, or generators too. It also includes anything else that changed the working tree during the run, so give parallel write dispatches their own worktree with `--worktree`.
 
 The command list comes from Codex's app-server event stream. That stream sends nothing for a command or an edit the sandbox refuses, so the list can be shorter than what Codex attempted; Codex's own session log under `~/.codex/sessions` has every call.
 

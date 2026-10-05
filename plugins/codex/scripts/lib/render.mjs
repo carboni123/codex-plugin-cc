@@ -115,14 +115,18 @@ function appendActiveJobsTable(lines, jobs) {
     if (job.status === "queued" || job.status === "running") {
       actions.push(`/codex:cancel ${job.id}`);
     }
+    const summary = job.otherWorkspace ? `[${job.workspaceRoot}] ${job.summary ?? ""}` : job.summary ?? "";
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(summary)} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
 
 function pushJobDetails(lines, job, options = {}) {
   lines.push(`- ${formatJobLine(job)}`);
+  if (job.otherWorkspace) {
+    lines.push(`  Workspace: ${job.workspaceRoot}`);
+  }
   if (job.summary) {
     lines.push(`  Summary: ${job.summary}`);
   }

@@ -81,8 +81,16 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
+const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const MODEL_ALIASES = new Map([
+  ["spark", "gpt-5.3-codex-spark"],
+  ["sol", "gpt-6.1-sol"],
+  ["astra", "gpt-6-astra"]
+]);
+// Defaults for `dispatch` when the prompt's directive line does not pick a model or effort.
+// Unset means Codex's own config decides.
+const DISPATCH_MODEL_ENV = "CODEX_DISPATCH_MODEL";
+const DISPATCH_EFFORT_ENV = "CODEX_DISPATCH_EFFORT";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const COMPANION_SCRIPT = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
 const DISPATCH_POLL_INTERVAL_MS = 1000;
@@ -95,8 +103,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark>] [--effort <effort>] [--raw] [prompt]",
+      `  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark|sol|astra>] [--effort <${[...VALID_REASONING_EFFORTS].join("|")}>] [prompt]`,
+      "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark|sol|astra>] [--effort <effort>] [--raw] [prompt]",
       "  node scripts/codex-companion.mjs wait <job-id> [--timeout <90s|5m|none>] [--json]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
@@ -139,7 +147,7 @@ function normalizeReasoningEffort(effort) {
   }
   if (!VALID_REASONING_EFFORTS.has(normalized)) {
     throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`
+      `Unsupported reasoning effort "${effort}". Use one of: ${[...VALID_REASONING_EFFORTS].join(", ")}.`
     );
   }
   return normalized;
@@ -1105,8 +1113,8 @@ async function handleDispatch(argv) {
   const write = !options["read-only"];
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const model = normalizeRequestedModel(options.model);
-  const effort = normalizeReasoningEffort(options.effort);
+  const model = normalizeRequestedModel(options.model ?? process.env[DISPATCH_MODEL_ENV]);
+  const effort = normalizeReasoningEffort(options.effort ?? process.env[DISPATCH_EFFORT_ENV]);
   const timeoutMs = parseDuration(options.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
   const task = taskText.trim();
 

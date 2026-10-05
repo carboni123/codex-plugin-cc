@@ -284,3 +284,28 @@ test("dispatch rejects resuming a job that is still running", () => {
 
   companion(["cancel", launched.jobId], ctx);
 });
+
+test("dispatch resolves model aliases and accepts the newer effort levels", () => {
+  const ctx = setupRepo("task-ok");
+  const result = companion(["dispatch"], ctx, "--model sol --effort ultra\nAudit the parser.");
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = ctx.readFakeState();
+  assert.equal(state.lastTurnStart.model, "gpt-6.1-sol");
+  assert.equal(state.lastTurnStart.effort, "ultra");
+});
+
+test("dispatch defaults to CODEX_DISPATCH_MODEL/EFFORT and the directive line overrides them", () => {
+  const ctx = setupRepo("task-ok");
+  const env = { ...ctx.env, CODEX_DISPATCH_MODEL: "astra", CODEX_DISPATCH_EFFORT: "high" };
+
+  const defaulted = companion(["dispatch", "Audit the parser."], { ...ctx, env });
+  assert.equal(defaulted.status, 0, defaulted.stderr);
+  assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6-astra");
+  assert.equal(ctx.readFakeState().lastTurnStart.effort, "high");
+
+  const overridden = companion(["dispatch"], { ...ctx, env }, "--model gpt-6-luna --effort max\nAudit it again.");
+  assert.equal(overridden.status, 0, overridden.stderr);
+  assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6-luna");
+  assert.equal(ctx.readFakeState().lastTurnStart.effort, "max");
+});

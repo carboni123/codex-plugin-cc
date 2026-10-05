@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+- Add model aliases `sol` (`gpt-6.1-sol`) and `astra` (`gpt-6-astra`)
+- Accept the `max` and `ultra` reasoning efforts that current Codex models offer
+- `dispatch` falls back to the `CODEX_DISPATCH_MODEL` / `CODEX_DISPATCH_EFFORT` environment variables when the prompt's directive line does not set a model or effort
+
 ## 1.1.1
 
 - Run the `codex:dispatch` relay on `claude-sonnet-5-5` instead of Haiku, and tell it plainly that it forwards the prompt and never acts on it

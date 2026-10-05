@@ -259,10 +259,16 @@ Find every place the session token is parsed and check each one for missing expi
 | Directive | Effect |
 | --- | --- |
 | `--read-only` | Read-only sandbox, for investigation and research. Without it, the run is write-capable, like a `general-purpose` subagent. |
-| `--effort <none\|minimal\|low\|medium\|high\|xhigh>` | Codex reasoning effort |
-| `--model <name\|spark>` | Codex model (`spark` maps to `gpt-5.3-codex-spark`) |
+| `--effort <low\|medium\|high\|xhigh\|max\|ultra>` | Codex reasoning effort (supported levels depend on the model) |
+| `--model <name\|sol\|astra\|spark>` | Codex model. Aliases: `sol` = `gpt-6.1-sol`, `astra` = `gpt-6-astra`, `spark` = `gpt-5.3-codex-spark` |
 | `--label <name>` | Name shown in `/codex:status` and the Codex thread list |
 | `--raw` | Send the prompt without the delegated-worker contract described below |
+
+Without `--model` or `--effort`, a dispatch uses `CODEX_DISPATCH_MODEL` / `CODEX_DISPATCH_EFFORT` if set, and otherwise Codex's own config (`~/.codex/config.toml`). To make every dispatch default to high effort, set the variable in the `env` block of `~/.claude/settings.json`:
+
+```json
+{ "env": { "CODEX_DISPATCH_EFFORT": "high" } }
+```
 
 **What Codex is told.** Each task is wrapped in a delegated-worker contract. It tells Codex that a Claude orchestrator only sees its final message and nobody can answer questions mid-run. Codex is asked to:
 

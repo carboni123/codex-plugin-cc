@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.0
+
+- The `codex:dispatch` relay now hands back the plugin's output verbatim. A live test showed the Sonnet relay rewording Codex's report and summarizing the evidence block, although its instructions say to return the output unchanged. A PostToolUse hook records the output of the relay's last dispatch or wait command, and a PreToolUse hook on Claude Code's internal `SubagentHandback` tool replaces the relay's final message with it. Each record is used once. If the internal tool changes, the hook stops matching and the relay's own message passes through
+
 ## 1.3.2
 
 Fixes from an end-to-end test through the relay:

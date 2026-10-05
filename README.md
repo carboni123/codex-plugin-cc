@@ -245,7 +245,7 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 Agent(subagent_type: "codex:dispatch", description: "Fix flaky auth test", prompt: "...")
 ```
 
-Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, and follow-ups through `SendMessage`, which continue the same Codex thread. For parallel write runs, use the `--worktree` directive below rather than the Agent tool's `isolation: "worktree"`: the plugin then creates, reports, and cleans up the worktree itself. A Sonnet relay forwards the prompt verbatim and polls until Codex finishes; Codex does the work.
+Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, and follow-ups through `SendMessage`, which continue the same Codex thread. For parallel write runs, use the `--worktree` directive below rather than the Agent tool's `isolation: "worktree"`: the plugin then creates, reports, and cleans up the worktree itself. A Sonnet relay forwards the prompt verbatim and polls until Codex finishes; Codex does the work. The relay cannot reword what comes back: a plugin hook replaces its final message with the plugin's own output, so Claude receives Codex's report and the evidence block exactly as the plugin produced them. (The hook intercepts Claude Code's internal handback tool for background agents; if that tool changes, the relay's own message passes through instead.)
 
 To make Claude prefer it, say so in the conversation or in `CLAUDE.md`, for example: "Delegate implementation and research subagent work to `codex:dispatch`."
 

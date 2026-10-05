@@ -1,5 +1,5 @@
 {
-  "description": "Session lifecycle, the optional stop-time review gate, and the codex:dispatch relay guard for Codex Companion.",
+  "description": "Session lifecycle, the optional stop-time review gate, and the codex:dispatch relay guard and verbatim handback for Codex Companion.",
   "hooks": {
     "SessionStart": [
       {
@@ -41,6 +41,28 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-relay-guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-relay-handback.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-relay-handback.mjs\"",
             "timeout": 5
           }
         ]

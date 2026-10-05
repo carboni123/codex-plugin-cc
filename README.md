@@ -399,6 +399,8 @@ That means:
 - it uses the same local authentication state
 - it uses the same repository checkout and machine-local environment
 
+Commands share one Codex app server per workspace through a small broker process, so later commands skip the startup cost. The broker shuts down after 5 minutes without a client (`CODEX_COMPANION_BROKER_IDLE_MS` changes this), and the `SessionEnd` hook stops it when the session ends.
+
 ### Will it use the same Codex config I already have?
 
 Yes. If you already use Codex, the plugin picks up the same [configuration](#common-configurations).

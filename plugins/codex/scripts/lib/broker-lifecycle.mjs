@@ -6,11 +6,24 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
+import { runCommand, terminateProcessTree } from "./process.mjs";
 import { resolveStateDir } from "./state.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
+
+// Kills a broker that stopped answering, but only after confirming the pid still belongs to a
+// broker: a long-dead broker's pid may have been reused by an unrelated process.
+export function killStaleBroker(pid) {
+  if (!Number.isFinite(pid) || process.platform === "win32") {
+    return;
+  }
+  const result = runCommand("ps", ["-o", "command=", "-p", String(pid)]);
+  if (result.status === 0 && result.stdout.includes("app-server-broker.mjs")) {
+    terminateProcessTree(pid);
+  }
+}
 
 export function createBrokerSessionDir(prefix = "cxc-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -123,7 +136,8 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile: existing.logFile ?? null,
       sessionDir: existing.sessionDir ?? null,
       pid: existing.pid ?? null,
-      killProcess: options.killProcess ?? null
+      // A stale broker that stopped answering must be killed, not just forgotten.
+      killProcess: options.killProcess ?? killStaleBroker
     });
     clearBrokerSession(cwd);
   }
@@ -154,7 +168,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: options.killProcess ?? killStaleBroker
     });
     return null;
   }

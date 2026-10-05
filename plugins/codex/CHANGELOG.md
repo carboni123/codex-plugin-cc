@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1
+
+- Brokers shut down after 5 minutes without a client (`CODEX_COMPANION_BROKER_IDLE_MS`). Before, a broker for any workspace other than the session's own (`--cwd` runs, worktrees, test repositories) lived until reboot
+- A broker that exits on its own removes its session directory and its `broker.json` entry
+- A stale broker that stopped answering is killed instead of orphaned, but only after `ps` confirms the pid still belongs to a broker, since a dead broker's pid may have been reused
+- `npm test` is hermetic: each test process uses one throwaway root for temp repositories, plugin state, and brokers, deleted on exit, and ignores the session variables Claude Code exports. Before, every run left hundreds of directories in `/tmp`, and running inside a Claude Code session broke tests
+- Idle timeout and stale-broker kill adapted from github.com/dragon84867/codex-plugin-cc
+
 ## 1.2.0
 
 - Network access for dispatches, set per turn through the sandbox policy: on by default for write runs (loopback services, fake servers, Docker), off for read-only runs. Override with `--network` / `--no-network` or `CODEX_DISPATCH_NETWORK`

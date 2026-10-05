@@ -674,12 +674,8 @@ rl.on("line", (line) => {
 
 export function buildEnv(binDir) {
   const sep = process.platform === "win32" ? ";" : ":";
-  const env = {
+  return {
     ...process.env,
     PATH: `${binDir}${sep}${process.env.PATH}`
   };
-  // A developer's own dispatch defaults must not leak into the tests.
-  delete env.CODEX_DISPATCH_MODEL;
-  delete env.CODEX_DISPATCH_EFFORT;
-  return env;
 }

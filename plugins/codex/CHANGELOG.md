@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.5.1
+## 1.5.2
+
+- Parallel dispatches no longer lose job records. Every job update read `state.json`, changed it, and wrote it back without a lock, so a process writing from an older read dropped the jobs recorded since then. It also deleted their job files and logs as if they had been pruned. With seven dispatches launched at once, two jobs vanished from `/codex:status` and `/codex:result`, although their Codex threads finished. Updates now hold a lock file next to `state.json` (taken over if its owner died or has held it for over 10 seconds), and they only delete the files of jobs they dropped from the state they read
+- `state.json` and job files are written to a temp file and renamed into place, so a reader never sees a half-written file
+- Ending a session removes its jobs through the same locked update
 
 - Claude can run `/codex:result` and `/codex:status` itself (they were user-only), so it can collect a dispatch's report by job id after the relay agent that started it has gone. Both are read-only; `/codex:cancel` and `/codex:transfer` stay user-only
 - A still-running dispatch checkpoint names those two commands above its `NEXT:` line, and the dispatch agent description says how to collect a report later

@@ -1,11 +1,22 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveJobsDir,
+  resolveStateDir,
+  resolveStateFile,
+  updateState,
+  upsertJob
+} from "../plugins/codex/scripts/lib/state.mjs";
+
+const STATE_MODULE_URL = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -47,7 +58,7 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
   }
 });
 
-test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
+test("updateState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
   const workspace = makeTempDir();
   const stateFile = resolveStateFile(workspace);
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -82,11 +93,7 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
     "utf8"
   );
 
-  saveState(workspace, {
-    version: 1,
-    config: { stopReviewGate: false },
-    jobs
-  });
+  updateState(workspace, () => {});
 
   const prunedJobFile = resolveJobFile(workspace, "job-0");
   const prunedLogFile = resolveJobLogFile(workspace, "job-0");
@@ -109,4 +116,59 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+});
+
+test("concurrent job updates from several processes keep every job and its files", async () => {
+  const workspace = makeTempDir();
+  const workers = 8;
+  // Workers start together so their updates overlap; each records its job and then several
+  // progress updates, the pattern of parallel dispatches.
+  const startAt = Date.now() + 500;
+  const script = `
+    import { upsertJob, writeJobFile } from ${JSON.stringify(STATE_MODULE_URL)};
+    const [workspace, id] = process.argv.slice(1);
+    while (Date.now() < ${startAt}) {}
+    writeJobFile(workspace, id, { id, status: "queued" });
+    upsertJob(workspace, { id, status: "queued" });
+    for (let step = 0; step < 10; step += 1) {
+      upsertJob(workspace, { id, status: "running", phase: "step-" + step });
+    }
+  `;
+  const exitCodes = await Promise.all(
+    Array.from({ length: workers }, (_, index) =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", script, workspace, `job-${index}`], {
+          stdio: "inherit"
+        });
+        child.on("exit", resolve);
+      })
+    )
+  );
+  assert.deepEqual(exitCodes, Array(workers).fill(0));
+
+  const expectedIds = Array.from({ length: workers }, (_, index) => `job-${index}`).sort();
+  const savedState = JSON.parse(fs.readFileSync(resolveStateFile(workspace), "utf8"));
+  assert.deepEqual(savedState.jobs.map((job) => job.id).sort(), expectedIds);
+  assert.deepEqual(savedState.jobs.map((job) => job.phase), Array(workers).fill("step-9"));
+  assert.deepEqual(
+    fs.readdirSync(resolveJobsDir(workspace)).sort(),
+    expectedIds.map((id) => `${id}.json`)
+  );
+  assert.equal(fs.existsSync(`${resolveStateFile(workspace)}.lock`), false);
+});
+
+test("a state lock left by a process that died is taken over", () => {
+  const workspace = makeTempDir();
+  const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+  const lockFile = `${resolveStateFile(workspace)}.lock`;
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  fs.writeFileSync(lockFile, `${deadPid} abandoned`, "utf8");
+
+  const startedAt = Date.now();
+  upsertJob(workspace, { id: "job-after-crash", status: "queued" });
+
+  assert.ok(Date.now() - startedAt < 5_000);
+  assert.equal(fs.existsSync(lockFile), false);
+  const savedState = JSON.parse(fs.readFileSync(resolveStateFile(workspace), "utf8"));
+  assert.deepEqual(savedState.jobs.map((job) => job.id), ["job-after-crash"]);
 });

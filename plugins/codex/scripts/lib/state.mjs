@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,11 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const STATE_LOCK_FILE_NAME = "state.json.lock";
+// An update holds the lock for milliseconds, so a lock this old belongs to a hung process.
+const STATE_LOCK_STALE_MS = 10_000;
+const STATE_LOCK_TIMEOUT_MS = 30_000;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 
 function nowIso() {
   return new Date().toISOString();
@@ -127,9 +132,105 @@ function removeFileIfExists(filePath) {
   }
 }
 
-export function saveState(cwd, state) {
-  const previousJobs = loadState(cwd).jobs;
+function sleepSync(ms) {
+  Atomics.wait(sleepCell, 0, 0, ms);
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+// Readers never see a half-written file: the content goes to a sibling temp file that is then
+// renamed over the target. Windows can refuse the rename briefly while another process has the
+// target open, so a few retries cover that.
+function writeFileAtomic(filePath, content) {
+  const tempFile = `${filePath}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(tempFile, content, "utf8");
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tempFile, filePath);
+      return;
+    } catch (error) {
+      if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(error?.code)) {
+        fs.rmSync(tempFile, { force: true });
+        throw error;
+      }
+      sleepSync(50);
+    }
+  }
+}
+
+function tryCreateLock(lockFile, token) {
+  try {
+    fs.writeFileSync(lockFile, token, { encoding: "utf8", flag: "wx" });
+    return true;
+  } catch (error) {
+    // Windows reports a lock file that is being deleted as EPERM rather than EEXIST.
+    if (error?.code === "EEXIST" || (process.platform === "win32" && error?.code === "EPERM")) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+// A lock is stale when its owner has died, or has held it far longer than any update takes.
+function isLockStale(lockFile) {
+  let content;
+  let modifiedAt;
+  try {
+    modifiedAt = fs.statSync(lockFile).mtimeMs;
+    content = fs.readFileSync(lockFile, "utf8");
+  } catch {
+    return false;
+  }
+  if (Date.now() - modifiedAt > STATE_LOCK_STALE_MS) {
+    return true;
+  }
+  const pid = Number.parseInt(content, 10);
+  return Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+}
+
+// Every change to state.json is a read-modify-write, and several processes make them at once
+// (each dispatch worker records its own progress). Without the lock, a writer working from an
+// older read drops the jobs recorded since then and deletes their job files.
+function withStateLock(cwd, fn) {
   ensureStateDir(cwd);
+  const lockFile = path.join(resolveStateDir(cwd), STATE_LOCK_FILE_NAME);
+  const token = `${process.pid} ${randomBytes(6).toString("hex")}`;
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  while (!tryCreateLock(lockFile, token)) {
+    if (isLockStale(lockFile)) {
+      fs.rmSync(lockFile, { force: true });
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for the Codex job state lock ${lockFile}. If no Codex command is running, delete it.`);
+    }
+    sleepSync(10 + Math.random() * 20);
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      // A lock taken over as stale now belongs to another process; leave it alone.
+      if (fs.readFileSync(lockFile, "utf8") === token) {
+        fs.unlinkSync(lockFile);
+      }
+    } catch {
+      // Already removed.
+    }
+  }
+}
+
+// Called with the state lock held. `previousJobs` comes from the same read the new state was
+// built from, so only jobs this update dropped (pruned or removed) lose their files.
+function saveState(cwd, state, previousJobs) {
   const nextJobs = pruneJobs(state.jobs ?? []);
   const nextState = {
     version: STATE_VERSION,
@@ -140,6 +241,8 @@ export function saveState(cwd, state) {
     jobs: nextJobs
   };
 
+  writeFileAtomic(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
+
   const retainedIds = new Set(nextJobs.map((job) => job.id));
   for (const job of previousJobs) {
     if (retainedIds.has(job.id)) {
@@ -149,14 +252,16 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
   return nextState;
 }
 
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    const previousJobs = [...state.jobs];
+    mutate(state);
+    return saveState(cwd, state, previousJobs);
+  });
 }
 
 export function generateJobId(prefix = "job") {
@@ -204,7 +309,7 @@ export function getConfig(cwd) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  writeFileAtomic(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 

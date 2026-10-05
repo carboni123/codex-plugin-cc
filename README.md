@@ -245,7 +245,7 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 Agent(subagent_type: "codex:dispatch", description: "Fix flaky auth test", prompt: "...")
 ```
 
-Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, `isolation: "worktree"`, and follow-ups through `SendMessage`, which continue the same Codex thread. A small Haiku relay forwards the prompt verbatim; Codex does the work.
+Because it is an ordinary subagent, it keeps everything the Agent tool gives you: background runs with a notification when they finish, parallel fan-out, `isolation: "worktree"`, and follow-ups through `SendMessage`, which continue the same Codex thread. A Sonnet relay forwards the prompt verbatim and polls until Codex finishes; Codex does the work.
 
 To make Claude prefer it, say so in the conversation or in `CLAUDE.md`, for example: "Delegate implementation and research subagent work to `codex:dispatch`."
 

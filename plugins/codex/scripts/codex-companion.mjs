@@ -43,6 +43,7 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { diffWorkingTreeSnapshots, mergeFileChanges, snapshotWorkingTree } from "./lib/worktree-snapshot.mjs";
 import { createDispatchWorktree, ensureDispatchWorktree, finishDispatchWorktree } from "./lib/dispatch-worktree.mjs";
+import { buildTroubleshootReport, renderTroubleshootReport } from "./lib/troubleshoot.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
@@ -113,6 +114,7 @@ function printUsage() {
       `  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark|sol|astra>] [--effort <${[...VALID_REASONING_EFFORTS].join("|")}>] [prompt]`,
       "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark|sol|astra>] [--effort <effort>] [--raw] [prompt]",
       "  node scripts/codex-companion.mjs wait <job-id> [--timeout <90s|5m|none>] [--json]",
+      "  node scripts/codex-companion.mjs troubleshoot [job-id] [--json]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -1252,6 +1254,30 @@ async function handleWait(argv) {
   });
 }
 
+async function handleTroubleshoot(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const reference = positionals[0] ?? "";
+  let jobSnapshot = null;
+  let storedJob = null;
+  let recentJobs = [];
+  if (reference) {
+    jobSnapshot = buildSingleJobSnapshot(cwd, reference);
+    storedJob = readStoredJob(jobSnapshot.workspaceRoot, jobSnapshot.job.id);
+  } else {
+    const snapshot = buildStatusSnapshot(cwd);
+    recentJobs = [...snapshot.running, ...(snapshot.latestFinished ? [snapshot.latestFinished] : []), ...snapshot.recent].slice(0, 6);
+  }
+
+  const report = buildTroubleshootReport({ rootDir: ROOT_DIR, workspaceRoot, jobSnapshot, storedJob, recentJobs });
+  outputCommandResult(report, renderTroubleshootReport(report), options.json);
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -1432,6 +1458,9 @@ async function main() {
       break;
     case "wait":
       await handleWait(argv);
+      break;
+    case "troubleshoot":
+      await handleTroubleshoot(argv);
       break;
     case "transfer":
       await handleTransfer(argv);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.0
+
+- `/codex:troubleshoot [job-id]`, a command Claude can also run on its own. It shows the plugin version this session loaded vs the one installed (flagging when `/reload-plugins` is needed), the Codex CLI version, where the plugin source lives (repository, plus a local checkout through `CODEX_PLUGIN_SOURCE`) and how to ship a fix, the dispatch settings and state paths, and the known limitations. For a job it adds the settings, workspace, follow-up chain, recent activity log, Codex session file, and stored report
+- Failed and cancelled dispatch reports end with `Diagnose: /codex:troubleshoot <job-id>`; the dispatch agent description points to the command
+- `plugin.json` names the repository
+
 ## 1.4.0
 
 - The `codex:dispatch` relay now hands back the plugin's output verbatim. A live test showed the Sonnet relay rewording Codex's report and summarizing the evidence block, although its instructions say to return the output unchanged. A PostToolUse hook records the output of the relay's last dispatch or wait command, and a PreToolUse hook on Claude Code's internal `SubagentHandback` tool replaces the relay's final message with it. Each record is used once. If the internal tool changes, the hook stops matching and the relay's own message passes through

@@ -218,6 +218,23 @@ Examples:
 /codex:cancel task-abc123
 ```
 
+### `/codex:troubleshoot`
+
+Diagnoses the plugin, or one dispatch job when you pass its id. It shows:
+
+- the plugin version this session loaded and the one installed (a mismatch means `/reload-plugins`), and the Codex CLI version
+- where the plugin comes from: the repository, and a local checkout if `CODEX_PLUGIN_SOURCE` points to one, with how to ship a fix (the installed copy is a cache that updates overwrite)
+- the dispatch settings in effect (`CODEX_DISPATCH_*`), the job state directory, and this workspace's shared broker
+- for a job: its settings, workspace, follow-up chain, recent activity log, the Codex session file that records every call (including ones the sandbox refused), and the report the plugin returned
+- the known limitations of the evidence and the relay
+
+Claude can run it on its own when a dispatch fails or looks wrong; failed and cancelled dispatch reports end with the exact command.
+
+```bash
+/codex:troubleshoot
+/codex:troubleshoot dispatch-mg2k1c-x81
+```
+
 ### `/codex:setup`
 
 Checks whether Codex is installed and authenticated.

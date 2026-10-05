@@ -458,6 +458,9 @@ export function renderDispatchReport(report) {
   if (report.threadId) {
     lines.push(`Follow up: send a message to this agent, or dispatch with --resume ${report.jobId}`);
   }
+  if (report.status !== "completed") {
+    lines.push(`Diagnose: /codex:troubleshoot ${report.jobId}`);
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -498,5 +501,6 @@ export function renderDispatchUnfinished(job, storedJob) {
   if (job.logFile) {
     lines.push(`Log: ${job.logFile}`);
   }
+  lines.push(`Diagnose: /codex:troubleshoot ${job.id}`);
   return `${lines.join("\n")}\n`;
 }

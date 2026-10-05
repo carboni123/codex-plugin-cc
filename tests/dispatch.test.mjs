@@ -12,6 +12,7 @@ import {
   unwrapShellCommand,
   parseDuration,
   renderDispatchReport,
+  renderDispatchUnfinished,
   splitDispatchDirectives,
   summarizeCommands,
   summarizeFileChanges
@@ -638,4 +639,11 @@ test("a follow-up from another directory runs where the resumed run ran, with it
   assert.equal(report.cwd, other);
   // The follow-up job is recorded with the work it continues, not in the caller's workspace.
   assert.equal(JSON.parse(companion(["result", JSON.parse(followUp.stdout).jobId, "--json", "--cwd", other], ctx).stdout).job.workspaceRoot, other);
+});
+
+test("only failed or cancelled dispatch reports point to /codex:troubleshoot", () => {
+  const base = { jobId: "dispatch-9", threadId: "thr_9", write: true, cwd: "/r", finalMessage: "ok", files: [], commands: [] };
+  assert.match(renderDispatchReport({ ...base, status: "failed", error: "boom" }), /^Diagnose: \/codex:troubleshoot dispatch-9$/m);
+  assert.doesNotMatch(renderDispatchReport({ ...base, status: "completed" }), /Diagnose:/);
+  assert.match(renderDispatchUnfinished({ id: "dispatch-9", status: "cancelled" }, null), /Diagnose: \/codex:troubleshoot dispatch-9/);
 });

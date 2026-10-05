@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1
+
+- Evidence marks compound commands (`a; b`, `a | b`, `a || b`, multi-line scripts) with `?` and "exit N from the last command only" instead of `✓`. The shell reports only the last part's exit code, so `pnpm test | tail` or `touch x; echo exit=$?` looked successful even when an earlier part failed. `&&` chains and here-documents are not flagged
+
 ## 1.3.0
 
 - `--worktree` dispatch directive: Codex works in its own git worktree, on a new `codex-dispatch/<job>` branch from the current commit, kept in the plugin's state directory. The report gives the path, branch, and commands to keep (commit and merge) or discard the changes; an unchanged worktree and its branch are removed. Follow-ups continue in the same worktree, and evidence is taken from the worktree

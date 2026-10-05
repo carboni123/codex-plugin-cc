@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
+  isCompoundCommand,
   parseDuration,
   renderDispatchReport,
   splitDispatchDirectives,
@@ -460,7 +461,7 @@ test("command evidence unwraps non-login shells and shows multi-line scripts on 
   ]);
   assert.equal(single.command, "ls");
   const rendered = renderDispatchReport({ status: "completed", jobId: "d", write: true, cwd: "/r", finalMessage: "ok", files: [], commands: [single, script] });
-  assert.match(rendered, /✓ printf hi > a\.txt; rm b\.txt; ls \(exit 0\)/);
+  assert.match(rendered, /\? printf hi > a\.txt; rm b\.txt; ls \(exit 0 from the last command only\)/);
 });
 
 test("jobs run in another workspace are found from this one by id, and listed for this session", () => {
@@ -547,4 +548,40 @@ test("--worktree is refused for a new read-only run and outside a git repository
   const outside = companion(["dispatch"], ctx, `--cwd ${plain} --worktree\nFix it.`);
   assert.equal(outside.status, 1);
   assert.match(outside.stderr, /Could not start a worktree/);
+});
+
+test("isCompoundCommand flags lines whose exit code is only the last command's", () => {
+  const compound = [
+    "touch x; echo exit=$?",
+    "pnpm test 2>&1 | tail -20",
+    "make || true",
+    "printf hi > a\nrm b",
+    "cat <<EOF | sh\nx\nEOF"
+  ];
+  const single = [
+    "npm test",
+    "cd web && pnpm test",
+    'echo "a;b|c"',
+    "grep -E 'a|b' file",
+    String.raw`echo a\;b`,
+    "cat <<'EOF' > notes.md\nline; with | separators\nEOF"
+  ];
+  for (const command of compound) {
+    assert.equal(isCompoundCommand(command), true, command);
+  }
+  for (const command of single) {
+    assert.equal(isCompoundCommand(command), false, command);
+  }
+});
+
+test("compound commands are marked ? instead of ✓ in the evidence", () => {
+  const commands = summarizeCommands([
+    { command: "/bin/bash -c 'touch /ro/x; echo exit=$?'", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c 'pnpm test 2>&1 | tail -5'", exitCode: 1, status: "failed" },
+    { command: "/bin/bash -c 'cd web && pnpm test'", exitCode: 0, status: "completed" }
+  ]);
+  const rendered = renderDispatchReport({ status: "completed", jobId: "d", write: true, cwd: "/r", finalMessage: "ok", files: [], commands });
+  assert.match(rendered, /\? touch \/ro\/x; echo exit=\$\? \(exit 0 from the last command only\)/);
+  assert.match(rendered, /✗ pnpm test 2>&1 \| tail -5 \(exit 1 from the last command only\)/);
+  assert.match(rendered, /✓ cd web && pnpm test \(exit 0\)/);
 });

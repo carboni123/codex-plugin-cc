@@ -277,6 +277,46 @@ export function looksLikeVerificationCommand(command) {
   );
 }
 
+/**
+ * True when a shell command runs several commands whose exit codes the shell does not combine:
+ * `a; b`, `a | b`, `a || b`, or one command per line. The reported exit code is then only the
+ * last command's, so `pnpm test | tail` exits 0 even when the tests fail. `a && b` chains stop at
+ * the first failure, so their exit code does speak for the whole line.
+ */
+export function isCompoundCommand(command) {
+  let text = String(command ?? "").trim();
+  // A here-document's body spans lines but belongs to one command.
+  if (text.includes("<<")) {
+    text = text.split(/\r?\n/)[0];
+  }
+  let quote = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === ";" || char === "\n") {
+      return true;
+    }
+    if (char === "|") {
+      // `|`, `||`, and `|&` all hide an earlier exit code.
+      return true;
+    }
+  }
+  return false;
+}
+
 export function summarizeCommands(commandExecutions = []) {
   return commandExecutions.map((item) => {
     const command = unwrapShellCommand(item?.command);
@@ -287,14 +327,17 @@ export function summarizeCommands(commandExecutions = []) {
       status: item?.status ?? null,
       durationMs: typeof item?.durationMs === "number" ? item.durationMs : null,
       verification: looksLikeVerificationCommand(command),
+      compound: isCompoundCommand(command),
       failed: (exitCode != null && exitCode !== 0) || item?.status === "failed" || item?.status === "declined"
     };
   });
 }
 
 function formatCommand(entry) {
-  const mark = entry.failed ? "✗" : "✓";
-  const outcome = entry.exitCode != null ? `exit ${entry.exitCode}` : entry.status ?? "unknown";
+  // A compound command's success is only its last part's, so it does not get a ✓.
+  const mark = entry.failed ? "✗" : entry.compound ? "?" : "✓";
+  const exit = entry.exitCode != null ? `exit ${entry.exitCode}` : entry.status ?? "unknown";
+  const outcome = entry.compound && entry.exitCode != null ? `${exit} from the last command only` : exit;
   const oneLine = entry.command.trim().split(/\s*\r?\n\s*/).join("; ");
   return `${mark} ${shorten(oneLine, 100)} (${outcome})`;
 }

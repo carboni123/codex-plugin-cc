@@ -308,6 +308,8 @@ Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k
 
 "Files changed during the run" comes from comparing `git status` (with content hashes) before and after the run, merged with the edits Codex's patch tool reports. It catches files written by shell commands, formatters, or generators too. It also includes anything else that changed the working tree during the run, so give parallel write dispatches their own worktree with `--worktree`.
 
+A `?` instead of `✓` marks a compound command (`a; b`, `a | b`, `a || b`, or several lines): the shell reports only the last part's exit code, so `pnpm test | tail` exits 0 even when the tests fail. `a && b` chains keep their `✓`, because they stop at the first failure.
+
 The command list comes from Codex's app-server event stream. That stream sends nothing for a command or an edit the sandbox refuses, so the list can be shorter than what Codex attempted; Codex's own session log under `~/.codex/sessions` has every call.
 
 Claude can check Codex's claims against this block. If the report says "tests pass" but the evidence shows a failing test run, Claude can see the mismatch.

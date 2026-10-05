@@ -265,19 +265,72 @@ export function summarizeFileChanges(fileChanges = [], cwd = null) {
   return [...byPath].map(([path, change]) => ({ path, change }));
 }
 
+// Splits a command line into words as sh does for quotes and backslashes (no expansions).
+// Returns null when a quote is left open.
+function splitShellWords(text) {
+  const words = [];
+  let word = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      if (word != null) {
+        words.push(word);
+        word = null;
+      }
+      continue;
+    }
+    word ??= "";
+    if (char === "'") {
+      const end = text.indexOf("'", index + 1);
+      if (end === -1) {
+        return null;
+      }
+      word += text.slice(index + 1, end);
+      index = end;
+    } else if (char === '"') {
+      let closed = false;
+      for (index += 1; index < text.length; index += 1) {
+        const inner = text[index];
+        if (inner === '"') {
+          closed = true;
+          break;
+        }
+        // Inside double quotes a backslash escapes only $ ` " \ and newline (a line continuation).
+        if (inner === "\\" && '$`"\\\n'.includes(text[index + 1] ?? "")) {
+          index += 1;
+          word += text[index] === "\n" ? "" : text[index];
+          continue;
+        }
+        word += inner;
+      }
+      if (!closed) {
+        return null;
+      }
+    } else if (char === "\\") {
+      index += 1;
+      word += text[index] === "\n" ? "" : (text[index] ?? "");
+    } else {
+      word += char;
+    }
+  }
+  if (word != null) {
+    words.push(word);
+  }
+  return words;
+}
+
 // Codex runs commands through `bash -c`; show the command Codex actually meant. Undoing the
 // outer quoting also matters for isCompoundCommand: inside `bash -c "python3 -c \"a; b\""` the
-// `;` is quoted, which only shows once `\"` is a quote again.
+// `;` is quoted, which only shows once `\"` is a quote again. Codex's quoting can also join
+// several quoted parts into the one argument, e.g. `"rg -n '"'a|b'"' file"`.
 export function unwrapShellCommand(command) {
   const text = String(command ?? "");
-  const match = text.match(/^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(?:(['"])([\s\S]*)\1|(\S+))$/);
+  const match = text.match(/^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+([\s\S]+)$/);
   if (!match) {
     return text;
   }
-  if (match[3] != null) {
-    return match[3];
-  }
-  return match[1] === '"' ? match[2].replace(/\\(["\\$`\n])/g, "$1") : match[2].replace(/'\\''/g, "'");
+  const words = splitShellWords(match[1]);
+  return words?.length === 1 ? words[0] : text;
 }
 
 export function looksLikeVerificationCommand(command) {

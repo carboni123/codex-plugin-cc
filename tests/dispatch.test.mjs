@@ -608,7 +608,13 @@ test("unwrapping bash -c undoes its quoting, so quoted separators are not mistak
   const cases = [
     [String.raw`/bin/bash -c "python3 -c \"from pathlib import Path; print(Path('a').read_text())\""`, `python3 -c "from pathlib import Path; print(Path('a').read_text())"`],
     [String.raw`/bin/bash -c "printf 'first\\n' > long.txt"`, String.raw`printf 'first\n' > long.txt`],
-    [String.raw`/bin/bash -lc 'echo '\''a; b'\'''`, `echo 'a; b'`]
+    [String.raw`/bin/bash -lc 'echo '\''a; b'\'''`, `echo 'a; b'`],
+    // Codex quotes an argument containing both quote kinds as several quoted parts.
+    [
+      `/bin/bash -c "rg -n '"'^export|''^function|''^(async )?function'"' plugins/codex/scripts/lib/state.mjs"`,
+      `rg -n '^export|^function|^(async )?function' plugins/codex/scripts/lib/state.mjs`
+    ],
+    ["/bin/bash -c ls", "ls"]
   ];
   for (const [raw, expected] of cases) {
     assert.equal(unwrapShellCommand(raw), expected);

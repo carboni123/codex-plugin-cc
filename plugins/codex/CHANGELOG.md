@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.3
+
+- Evidence shows the command Codex ran when Codex's quoting splits the `bash -c` argument into several quoted parts (for example `"rg -n '"'^a|^b'"' file"`, which it produces for an argument containing both quote kinds). Before, the command was displayed with leftover quote marks, and a `|` inside the quoted regex counted as a pipe, so the command got `?` and "exit N from the last command only" instead of `✓`
+
 ## 1.5.2
 
 - Parallel dispatches no longer lose job records. Every job update read `state.json`, changed it, and wrote it back without a lock, so a process writing from an older read dropped the jobs recorded since then. It also deleted their job files and logs as if they had been pruned. With seven dispatches launched at once, two jobs vanished from `/codex:status` and `/codex:result`, although their Codex threads finished. Updates now hold a lock file next to `state.json` (taken over if its owner died or has held it for over 10 seconds), and they only delete the files of jobs they dropped from the state they read

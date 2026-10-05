@@ -1,7 +1,6 @@
 ---
-description: Show the stored final output for a finished Codex job in this repository
+description: Show the stored final output of a finished Codex job (review, rescue, or dispatch). With a job id it finds the job in any workspace, so Claude can collect a codex:dispatch report after the relay agent that started it has gone.
 argument-hint: '[job-id]'
-disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 

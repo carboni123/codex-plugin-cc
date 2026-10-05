@@ -219,6 +219,7 @@ test("dispatch checkpoints a long run with a NEXT command that wait resumes", ()
   assert.match(pending.stdout, /Codex dispatch dispatch-\S+ is still (queued|running)/);
   const next = pending.stdout.trim().split("\n").at(-1);
   assert.match(next, /^NEXT: node ".+codex-companion\.mjs" wait dispatch-\S+ --cwd ".+"$/);
+  assert.match(pending.stdout, /collect the report later with \/codex:result dispatch-\S+ \(progress: \/codex:status dispatch-\S+\)\.\nNEXT: /);
 
   const jobId = next.match(/wait (dispatch-\S+)/)[1];
   const finished = companion(["wait", jobId, "--timeout", "20s"], ctx);

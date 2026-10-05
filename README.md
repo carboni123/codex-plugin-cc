@@ -333,6 +333,8 @@ Claude can check Codex's claims against this block. If the report says "tests pa
 
 **Shell environment.** Dispatched runs use a non-login shell, so Codex's commands see the same `PATH` as Claude Code's Bash tool. Codex's default login shell re-reads `/etc/profile`, which on Debian and Ubuntu rebuilds `PATH` and drops tools installed through version managers like nvm.
 
+**Collecting results later.** Claude can run `/codex:status <job-id>` and `/codex:result <job-id>` itself, from any workspace, so a dispatch's report can still be collected after the relay agent that started it has gone. A still-running checkpoint says so above its `NEXT:` line.
+
 **Long runs and stopping.** Each dispatch is a tracked background job, so it shows up in `/codex:status`, `/codex:result`, and `/codex:cancel`. The relay checks in about every 100 seconds, so recent Codex activity shows up in the agent's transcript while it works. Stopping the agent stops Codex too: when the waiting process is terminated, the job is cancelled and the Codex turn interrupted.
 
 **Without the relay.** The `SessionStart` hook exports `CODEX_COMPANION_ROOT`, so the main Claude thread can also dispatch directly with a background Bash command and get notified when it exits:

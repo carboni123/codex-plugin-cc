@@ -1,7 +1,6 @@
 ---
-description: Show active and recent Codex jobs for this repository, including review-gate status
+description: Show active and recent Codex jobs, including review-gate status. With a job id, that job's progress from any workspace, so Claude can check whether a codex:dispatch job it can no longer follow has finished.
 argument-hint: '[job-id] [--wait] [--timeout-ms <ms>] [--all]'
-disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 

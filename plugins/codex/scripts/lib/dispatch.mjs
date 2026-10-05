@@ -473,6 +473,7 @@ export function renderDispatchPending(job, nextCommand) {
       lines.push(`  - ${line}`);
     }
   }
+  lines.push(`If this agent stops before Codex finishes, collect the report later with /codex:result ${job.id} (progress: /codex:status ${job.id}).`);
   lines.push(`NEXT: ${nextCommand}`);
   return `${lines.join("\n")}\n`;
 }

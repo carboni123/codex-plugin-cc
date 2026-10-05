@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.1
+
+- Claude can run `/codex:result` and `/codex:status` itself (they were user-only), so it can collect a dispatch's report by job id after the relay agent that started it has gone. Both are read-only; `/codex:cancel` and `/codex:transfer` stay user-only
+- A still-running dispatch checkpoint names those two commands above its `NEXT:` line, and the dispatch agent description says how to collect a report later
+- Tests clear `CODEX_PLUGIN_SOURCE`, so a configured local source no longer leaks into them
+
 ## 1.5.0
 
 - `/codex:troubleshoot [job-id]`, a command Claude can also run on its own. It shows the plugin version this session loaded vs the one installed (flagging when `/reload-plugins` is needed), the Codex CLI version, where the plugin source lives (repository, plus a local checkout through `CODEX_PLUGIN_SOURCE`) and how to ship a fix, the dispatch settings and state paths, and the known limitations. For a job it adds the settings, workspace, follow-up chain, recent activity log, Codex session file, and stored report

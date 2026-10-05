@@ -9,6 +9,7 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
   isCompoundCommand,
+  unwrapShellCommand,
   parseDuration,
   renderDispatchReport,
   splitDispatchDirectives,
@@ -252,9 +253,12 @@ test("stopping a waiting dispatch cancels the Codex job", async () => {
   });
 
   const deadline = Date.now() + 10_000;
+  let workerPid = null;
   for (;;) {
     const status = JSON.parse(companion(["status", "--json"], ctx).stdout);
-    if (status.running.some((job) => job.turnId)) {
+    const started = status.running.find((job) => job.turnId);
+    if (started) {
+      workerPid = started.pid;
       break;
     }
     assert.ok(Date.now() < deadline, "dispatch never started its turn");
@@ -272,7 +276,19 @@ test("stopping a waiting dispatch cancels the Codex job", async () => {
   assert.equal(status.running.length, 0);
   assert.equal(status.latestFinished.status, "cancelled");
   assert.match(status.latestFinished.errorMessage, /received SIGTERM/);
-  assert.ok(ctx.readFakeState().lastInterrupt, "expected a turn/interrupt request");
+  // The turn runs on the worker's own app-server, so killing the worker ends it; no other
+  // app-server is asked to interrupt a thread it does not know.
+  assert.equal(ctx.readFakeState().lastInterrupt ?? null, null);
+  let workerAlive = true;
+  for (let attempt = 0; attempt < 30 && workerAlive; attempt += 1) {
+    try {
+      process.kill(workerPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch {
+      workerAlive = false;
+    }
+  }
+  assert.equal(workerAlive, false, "the Codex worker survived the cancel");
 });
 
 test("dispatch rejects resuming a job that is still running", () => {
@@ -584,4 +600,42 @@ test("compound commands are marked ? instead of ✓ in the evidence", () => {
   assert.match(rendered, /\? touch \/ro\/x; echo exit=\$\? \(exit 0 from the last command only\)/);
   assert.match(rendered, /✗ pnpm test 2>&1 \| tail -5 \(exit 1 from the last command only\)/);
   assert.match(rendered, /✓ cd web && pnpm test \(exit 0\)/);
+});
+
+test("unwrapping bash -c undoes its quoting, so quoted separators are not mistaken for compound commands", () => {
+  const cases = [
+    [String.raw`/bin/bash -c "python3 -c \"from pathlib import Path; print(Path('a').read_text())\""`, `python3 -c "from pathlib import Path; print(Path('a').read_text())"`],
+    [String.raw`/bin/bash -c "printf 'first\\n' > long.txt"`, String.raw`printf 'first\n' > long.txt`],
+    [String.raw`/bin/bash -lc 'echo '\''a; b'\'''`, `echo 'a; b'`]
+  ];
+  for (const [raw, expected] of cases) {
+    assert.equal(unwrapShellCommand(raw), expected);
+    assert.equal(isCompoundCommand(unwrapShellCommand(raw)), false, expected);
+  }
+  assert.equal(isCompoundCommand(unwrapShellCommand(String.raw`/bin/bash -c "touch x; echo \"done\""`)), true);
+});
+
+test("a follow-up from another directory runs where the resumed run ran, with its settings", () => {
+  const ctx = setupRepo("task-ok");
+  const other = makeTempDir();
+  initGitRepo(other);
+  fs.writeFileSync(path.join(other, "a.txt"), "a\n");
+  run("git", ["add", "."], { cwd: other });
+  run("git", ["commit", "-m", "init"], { cwd: other });
+
+  const first = JSON.parse(
+    companion(["dispatch", "--json"], ctx, `--cwd ${other} --read-only --network --model astra\nAudit the other repo.`).stdout
+  );
+  // The relay's shell sits in ctx.repo and forwards only the follow-up message.
+  const followUp = companion(["dispatch", "--json", "--resume", first.jobId, "follow up: and the tests?"], ctx);
+  assert.equal(followUp.status, 0, followUp.stderr);
+  const report = JSON.parse(followUp.stdout).report;
+
+  const state = ctx.readFakeState();
+  assert.equal(state.lastThreadResume.cwd, other);
+  assert.deepEqual(state.lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: true });
+  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(report.cwd, other);
+  // The follow-up job is recorded with the work it continues, not in the caller's workspace.
+  assert.equal(JSON.parse(companion(["result", JSON.parse(followUp.stdout).jobId, "--json", "--cwd", other], ctx).stdout).job.workspaceRoot, other);
 });

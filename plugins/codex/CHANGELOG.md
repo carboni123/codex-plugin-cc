@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2
+
+Fixes from an end-to-end test through the relay:
+
+- A follow-up now runs in the directory of the run it resumes, and reads that run's settings from that run's workspace. Before, a follow-up without `--cwd` used the relay shell's directory: it ran write-capable in whatever repository the Claude session was in, and silently lost the original sandbox, network, model, and effort
+- Cancelling a dispatch no longer asks another app-server to interrupt its turn. That always failed ("thread not found") and could start an app-server just to fail; killing the worker's process group already ends the turn
+- Unwrapping `bash -c "…"` undoes its quoting, so `python3 -c "a; b"` is no longer flagged as a compound command and escaped characters display normally
+
 ## 1.3.1
 
 - Evidence marks compound commands (`a; b`, `a | b`, `a || b`, multi-line scripts) with `?` and "exit N from the last command only" instead of `✓`. The shell reports only the last part's exit code, so `pnpm test | tail` or `touch x; echo exit=$?` looked successful even when an earlier part failed. `&&` chains and here-documents are not flagged

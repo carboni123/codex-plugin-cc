@@ -1114,7 +1114,7 @@ function resolveDispatchResumeJob(cwd, reference) {
   if (busy) {
     throw new Error(`Codex thread ${job.threadId} is busy with job ${busy.id}. Wait for it before sending a follow-up.`);
   }
-  return job;
+  return { ...job, workspaceRoot };
 }
 
 async function handleDispatch(argv) {
@@ -1131,9 +1131,17 @@ async function handleDispatch(argv) {
   const { options: directives, prompt: taskText } = splitDispatchDirectives(rawPrompt);
   // Explicit command-line flags win over the prompt's directive line.
   const options = { ...directives, ...cliOptions };
-  const cwd = resolveCommandCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const timeoutMs = parseDuration(cliOptions.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
+
+  // A follow-up continues the same work: unless its directives say otherwise, it runs where the
+  // resumed run ran and keeps its sandbox, network, writable roots, model, effort, and prompt
+  // framing. The relay forwards only the follow-up message, and its shell may sit anywhere, so
+  // the resumed job (found in any workspace) decides the directory, not the caller's cwd.
+  const invocationCwd = resolveCommandCwd(options);
+  const resumed = options.resume ? resolveDispatchResumeJob(invocationCwd, options.resume) : null;
+  const prior = resumed ? readStoredJob(resumed.workspaceRoot, resumed.id)?.request ?? {} : {};
+  const cwd = !options.cwd && prior.cwd ? prior.cwd : invocationCwd;
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
 
   let task = taskText.trim();
   if (directives["prompt-file"]) {
@@ -1142,14 +1150,9 @@ async function handleDispatch(argv) {
     }
     task = fs.readFileSync(path.resolve(cwd, directives["prompt-file"]), "utf8").trim();
   }
-
-  // A follow-up continues the same work: unless its directives say otherwise, it keeps the
-  // sandbox, network, writable roots, model, effort, and prompt framing of the run it resumes.
-  const resumed = options.resume ? resolveDispatchResumeJob(cwd, options.resume) : null;
   if (!task && !resumed) {
     throw new Error("Provide the task for Codex as the prompt, a --prompt-file, or piped stdin.");
   }
-  const prior = resumed ? readStoredJob(workspaceRoot, resumed.id)?.request ?? {} : {};
 
   if (options["read-only"] && options.write) {
     throw new Error("Choose either --read-only or --write.");
@@ -1334,8 +1337,13 @@ async function cancelJob(workspaceRoot, job, reason = "Cancelled by user.") {
   const threadId = existing.threadId ?? job.threadId ?? null;
   const turnId = existing.turnId ?? job.turnId ?? null;
 
-  // The job's own workspace owns its broker, which may not be the caller's.
-  const interrupt = await interruptAppServerTurn(workspaceRoot, { threadId, turnId });
+  // A dispatch runs its turn on a private app-server inside the worker's process group, which the
+  // kill below takes down; another app-server cannot interrupt it ("thread not found"). Other jobs
+  // may run on their workspace's shared broker, which must be asked to interrupt the turn.
+  const interrupt =
+    job.jobClass === "dispatch"
+      ? { attempted: false, interrupted: false, detail: null }
+      : await interruptAppServerTurn(workspaceRoot, { threadId, turnId });
   if (interrupt.attempted) {
     appendLogLine(
       job.logFile,

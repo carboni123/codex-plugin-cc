@@ -265,10 +265,19 @@ export function summarizeFileChanges(fileChanges = [], cwd = null) {
   return [...byPath].map(([path, change]) => ({ path, change }));
 }
 
-// Codex runs commands through a login shell; show the command Codex actually meant.
-function unwrapShellCommand(command) {
-  const match = String(command ?? "").match(/^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(?:(['"])([\s\S]*)\1|(\S+))$/);
-  return match ? match[2] ?? match[3] : String(command ?? "");
+// Codex runs commands through `bash -c`; show the command Codex actually meant. Undoing the
+// outer quoting also matters for isCompoundCommand: inside `bash -c "python3 -c \"a; b\""` the
+// `;` is quoted, which only shows once `\"` is a quote again.
+export function unwrapShellCommand(command) {
+  const text = String(command ?? "");
+  const match = text.match(/^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(?:(['"])([\s\S]*)\1|(\S+))$/);
+  if (!match) {
+    return text;
+  }
+  if (match[3] != null) {
+    return match[3];
+  }
+  return match[1] === '"' ? match[2].replace(/\\(["\\$`\n])/g, "$1") : match[2].replace(/'\\''/g, "'");
 }
 
 export function looksLikeVerificationCommand(command) {

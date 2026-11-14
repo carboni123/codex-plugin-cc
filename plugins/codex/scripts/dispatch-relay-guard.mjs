@@ -3,7 +3,8 @@
 // PreToolUse guard for the codex:dispatch relay agent. The relay exists only to forward a
 // payload to Codex; if its model starts doing the task itself, Claude gets a Claude answer
 // dressed up as a Codex report. This hook rejects every Bash command from the relay except
-// the dispatch and wait commands, so doing the work itself is not an option.
+// the dispatch and wait commands, so doing the work itself is not an option. Both must carry
+// --relay, which keeps the report out of the relay's hands (see dispatch-relay-handback.mjs).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -14,8 +15,8 @@ const RELAY_AGENT_TYPE = "codex:dispatch";
 const HEREDOC_MARKER = "CODEX_DISPATCH_PROMPT_EOF";
 const COMPANION_SCRIPT = path.join(path.resolve(fileURLToPath(new URL("..", import.meta.url))), "scripts", "codex-companion.mjs");
 
-const DISPATCH_LINE = new RegExp(`^node "([^"]+)" dispatch(?: --resume [A-Za-z0-9._-]+)? <<'${HEREDOC_MARKER}'$`);
-const WAIT_COMMAND = /^node "([^"]+)" wait [A-Za-z0-9._-]+ --cwd "[^"`$\\]*"$/;
+const DISPATCH_LINE = new RegExp(`^node "([^"]+)" dispatch --relay(?: --resume [A-Za-z0-9._-]+)? <<'${HEREDOC_MARKER}'$`);
+const WAIT_COMMAND = /^node "([^"]+)" wait [A-Za-z0-9._-]+ --cwd "[^"`$\\]*" --relay$/;
 
 function canonicalPath(filePath) {
   try {
@@ -52,11 +53,11 @@ export function buildDenialReason() {
     "codex:dispatch is a relay: it may only run the Codex dispatch commands, never do the task itself.",
     "Forward the payload you received, verbatim, with:",
     "",
-    `node "${COMPANION_SCRIPT}" dispatch <<'${HEREDOC_MARKER}'`,
+    `node "${COMPANION_SCRIPT}" dispatch --relay <<'${HEREDOC_MARKER}'`,
     "<the payload, verbatim>",
     HEREDOC_MARKER,
     "",
-    "For a follow-up, add `--resume <job-id>` after `dispatch`. To keep waiting, run the `NEXT:` command from the last output exactly as given."
+    "For a follow-up, add `--resume <job-id>` after `dispatch --relay`. To keep waiting, run the `NEXT:` command from the last output exactly as given; it ends with `--relay`."
   ].join("\n");
 }
 

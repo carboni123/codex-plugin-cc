@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.0
+
+- Claude receives a dispatch report exactly as the plugin stored it. Until now the relay agent's model retyped it: the hook meant to substitute the plugin's output only runs in auto permission mode, the one mode where Claude Code gives subagents the `SubagentHandback` tool it intercepts. Of 630 recorded relay runs, 580 handed Claude an altered report: Codex's message shortened or reworded, the evidence block turned into prose, truncated commands filled in
+- The relay runs `dispatch --relay` and `wait --relay`, which print two lines naming the job instead of the report, so the relay has nothing to rewrite. Hooks attach the stored report to the relay's result: as hook context on a background relay's completion notification (`UserPromptSubmit`), in place of a foreground relay's result (`PostToolUse` on `Agent`), and in place of the handback message in auto mode. On a notification, a report over 10,000 characters arrives as a file path with a preview. If no hook runs, the two lines say to run `/codex:result <job-id>`. Checked with Claude Code 2.1.325
+- The relay guard denies dispatch and wait commands without `--relay`, and its message shows the command to run instead
+- In the Claude Code interface a finished relay's own message is now those two lines; `/codex:result <job-id>` shows the report
+- Records of relay results that never reached a caller are removed after 3 days. Before, every relay run left one behind
+
 ## 1.5.3
 
 - Evidence shows the command Codex ran when Codex's quoting splits the `bash -c` argument into several quoted parts (for example `"rg -n '"'^a|^b'"' file"`, which it produces for an argument containing both quote kinds). Before, the command was displayed with leftover quote marks, and a `|` inside the quoted regex counted as a pipe, so the command got `?` and "exit N from the last command only" instead of `✓`

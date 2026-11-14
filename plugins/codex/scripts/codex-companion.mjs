@@ -32,7 +32,6 @@ import {
   parseDuration,
   renderDispatchPending,
   renderDispatchReport,
-  renderDispatchUnfinished,
   resolveDispatchNetwork,
   resolveDispatchSandbox,
   resolveDispatchWritableRoots,
@@ -40,6 +39,8 @@ import {
   summarizeCommands,
   summarizeFileChanges
 } from "./lib/dispatch.mjs";
+import { renderDispatchHandoff } from "./lib/dispatch-handoff.mjs";
+import { DISPATCH_PROGRESS_LINES, renderFinishedDispatch } from "./lib/dispatch-report.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { diffWorkingTreeSnapshots, mergeFileChanges, snapshotWorkingTree } from "./lib/worktree-snapshot.mjs";
 import { createDispatchWorktree, ensureDispatchWorktree, finishDispatchWorktree } from "./lib/dispatch-worktree.mjs";
@@ -102,7 +103,6 @@ const DISPATCH_EFFORT_ENV = "CODEX_DISPATCH_EFFORT";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 const COMPANION_SCRIPT = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
 const DISPATCH_POLL_INTERVAL_MS = 1000;
-const DISPATCH_PROGRESS_LINES = 6;
 
 function printUsage() {
   console.log(
@@ -112,8 +112,8 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       `  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark|sol|astra>] [--effort <${[...VALID_REASONING_EFFORTS].join("|")}>] [prompt]`,
-      "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark|sol|astra>] [--effort <effort>] [--raw] [prompt]",
-      "  node scripts/codex-companion.mjs wait <job-id> [--timeout <90s|5m|none>] [--json]",
+      "  node scripts/codex-companion.mjs dispatch [--read-only] [--resume <job-id>] [--label <name>] [--timeout <90s|5m|0|none>] [--model <model|spark|sol|astra>] [--effort <effort>] [--raw] [--relay] [prompt]",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout <90s|5m|none>] [--relay] [--json]",
       "  node scripts/codex-companion.mjs troubleshoot [job-id] [--json]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
@@ -1060,8 +1060,8 @@ function cancelDispatchOnSignal(cwd, jobId) {
   };
 }
 
-function buildDispatchWaitCommand(workspaceRoot, jobId) {
-  return `node "${COMPANION_SCRIPT}" wait ${jobId} --cwd "${workspaceRoot}"`;
+function buildDispatchWaitCommand(workspaceRoot, jobId, relay = false) {
+  return `node "${COMPANION_SCRIPT}" wait ${jobId} --cwd "${workspaceRoot}"${relay ? " --relay" : ""}`;
 }
 
 async function waitAndRenderDispatch(cwd, jobId, timeoutMs, options = {}) {
@@ -1076,13 +1076,17 @@ async function waitAndRenderDispatch(cwd, jobId, timeoutMs, options = {}) {
   const { workspaceRoot, job } = snapshot;
   const storedJob = readStoredJob(workspaceRoot, job.id);
   const active = isActiveJobStatus(job.status);
+  const relay = Boolean(options.relay);
+  const next = buildDispatchWaitCommand(workspaceRoot, job.id, relay);
   let rendered;
   if (active) {
-    rendered = renderDispatchPending(job, buildDispatchWaitCommand(workspaceRoot, job.id));
-  } else if (storedJob?.rendered) {
-    rendered = storedJob.rendered;
+    rendered = renderDispatchPending(job, next);
+  } else if (relay) {
+    // The relay agent gets the job's outcome, not the report: the report-delivery hooks attach
+    // the stored report to the relay's result, so no model retypes it.
+    rendered = renderDispatchHandoff(job);
   } else {
-    rendered = renderDispatchUnfinished(job, storedJob);
+    rendered = renderFinishedDispatch(job, storedJob);
   }
 
   const payload = {
@@ -1091,12 +1095,14 @@ async function waitAndRenderDispatch(cwd, jobId, timeoutMs, options = {}) {
     phase: job.phase ?? null,
     elapsed: job.elapsed ?? null,
     progressPreview: active ? job.progressPreview : [],
-    next: active ? buildDispatchWaitCommand(workspaceRoot, job.id) : null,
+    next: active ? next : null,
     report: storedJob?.result ?? null,
     error: job.errorMessage ?? storedJob?.errorMessage ?? null
   };
   outputCommandResult(payload, rendered, options.json);
-  if (!active && job.status !== "completed") {
+  // A failed Bash call skips the PostToolUse hook that notes which job the relay finished, so in
+  // relay mode a failed dispatch is reported by the handoff, not by the exit code.
+  if (!active && job.status !== "completed" && !relay) {
     process.exitCode = 1;
   }
 }
@@ -1122,7 +1128,7 @@ function resolveDispatchResumeJob(cwd, reference) {
 async function handleDispatch(argv) {
   const { options: cliOptions, positionals } = parseCommandInput(argv, {
     valueOptions: [...DISPATCH_DIRECTIVE_OPTIONS.valueOptions, "timeout"],
-    booleanOptions: [...DISPATCH_DIRECTIVE_OPTIONS.booleanOptions, "json"],
+    booleanOptions: [...DISPATCH_DIRECTIVE_OPTIONS.booleanOptions, "json", "relay"],
     arrayOptions: DISPATCH_DIRECTIVE_OPTIONS.arrayOptions,
     aliasMap: {
       m: "model"
@@ -1224,8 +1230,9 @@ async function handleDispatch(argv) {
     jobId: job.id
   });
 
+  const relay = Boolean(cliOptions.relay);
   if (timeoutMs === 0) {
-    const next = buildDispatchWaitCommand(workspaceRoot, job.id);
+    const next = buildDispatchWaitCommand(workspaceRoot, job.id, relay);
     outputCommandResult(
       { jobId: job.id, status: "queued", next },
       `Codex dispatch ${job.id} started${resumed ? ` (follow-up to ${resumed.id})` : ""}.\nNEXT: ${next}\n`,
@@ -1234,13 +1241,13 @@ async function handleDispatch(argv) {
     return;
   }
 
-  await waitAndRenderDispatch(cwd, job.id, timeoutMs, { json: options.json });
+  await waitAndRenderDispatch(cwd, job.id, timeoutMs, { json: options.json, relay });
 }
 
 async function handleWait(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout"],
-    booleanOptions: ["json", "no-cancel-on-exit"]
+    booleanOptions: ["json", "no-cancel-on-exit", "relay"]
   });
 
   const reference = positionals[0];
@@ -1250,6 +1257,7 @@ async function handleWait(argv) {
   const timeoutMs = parseDuration(options.timeout, DEFAULT_DISPATCH_TIMEOUT_MS);
   await waitAndRenderDispatch(resolveCommandCwd(options), reference, timeoutMs, {
     json: options.json,
+    relay: Boolean(options.relay),
     cancelOnSignal: !options["no-cancel-on-exit"]
   });
 }

@@ -42,7 +42,7 @@ Long reviews and tasks can run with `--background`; check on them with `/codex:s
 
 ## `codex:dispatch`: Codex as a Claude subagent
 
-`codex:dispatch` takes the prompt you would give `general-purpose`, an implementer, or a research agent, and Codex does the work. It keeps what the Agent tool provides: background runs, parallel fan-out, and follow-ups through `SendMessage` that continue the same Codex thread. A small relay agent forwards the prompt and waits; a hook hands the plugin's output back to Claude unchanged. To make Claude prefer it, say so in `CLAUDE.md`, e.g. "Delegate implementation and research subagent work to `codex:dispatch`."
+`codex:dispatch` takes the prompt you would give `general-purpose`, an implementer, or a research agent, and Codex does the work. It keeps what the Agent tool provides: background runs, parallel fan-out, and follow-ups through `SendMessage` that continue the same Codex thread. A small relay agent forwards the prompt and waits; the plugin's hooks then give Claude the report exactly as stored, so no model retypes it. To make Claude prefer it, say so in `CLAUDE.md`, e.g. "Delegate implementation and research subagent work to `codex:dispatch`."
 
 Options go on the prompt's first line:
 
@@ -89,6 +89,8 @@ Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k
 - Changed files come from `git status` before and after the run plus Codex's own edits, so they include anything else that changed the working tree meanwhile. Give parallel write runs `--worktree`.
 - `?` instead of `✓` marks a compound command (`a; b`, `a | b`, `a || b`): its exit code is only the last part's.
 - Commands the sandbox refused are not reported; Codex's session log under `~/.codex/sessions` has every call.
+
+**How it reaches Claude.** The relay agent never sees the report. When Codex is done, the relay returns two lines that name the job, and hooks attach the stored report to that result: as hook context on a background agent's completion notification, or in place of a foreground agent's result. A report over 10,000 characters arrives on a notification as a file path with a preview, and Claude reads the file. In the Claude Code interface the agent's own message is those two lines; `/codex:result <job-id>` shows the report, and it is what Claude runs if a result arrives without one.
 
 **Jobs.** Each dispatch is a background job. `/codex:status`, `/codex:result`, and `/codex:cancel` find it by id from any workspace, so Claude can collect a report after the relay agent is gone. Stopping the agent cancels the Codex run. The main thread can also dispatch without the relay:
 

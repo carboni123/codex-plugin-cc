@@ -21,7 +21,7 @@ const LOG_TAIL_LINES = 15;
 export const KNOWN_LIMITATIONS = [
   "The evidence lists commands from Codex's app-server event stream, which sends nothing for a command or edit the sandbox refused. Codex's session file (below, per job) has every call.",
   "A `?` marks a compound command (`a; b`, `a | b`, `a || b`, several lines): its exit code is only the last part's.",
-  "The relay's verbatim handback intercepts Claude Code's internal SubagentHandback tool. If that tool changes, the relay's own (possibly reworded) message comes through instead; compare it with `/codex:result <job-id>`.",
+  "The relay agent returns two lines that name the job, and hooks attach the stored report to its result: as hook context on a background relay's completion notification (a report over 10,000 characters arrives there as a file path with a preview), or in place of a foreground relay's result. A result that arrives without the report means the hooks did not run; `/codex:result <job-id>` prints it.",
   "In a read-only run with --writable-root, only the repository's changes are tracked; files written in the writable roots are not listed.",
   "CODEX_COMPANION_ROOT is exported by the SessionStart hook, so sessions started before this plugin version was installed do not have it.",
   "A Claude Code session keeps the plugin version it loaded until /reload-plugins; installing an update alone changes nothing in a running session."
@@ -219,7 +219,9 @@ export function renderTroubleshootReport(report) {
   lines.push(`- Job state root: ${report.stateRoot}`);
   lines.push(`- Shared broker for this workspace: ${report.broker ? `${report.broker.endpoint} (pid ${report.broker.pid ?? "?"})` : "none"}`);
   if (report.pendingHandbacks > 0) {
-    lines.push(`- Unconsumed relay handback records: ${report.pendingHandbacks} (a relay recorded output but never handed back, e.g. it was stopped)`);
+    lines.push(
+      `- Undelivered relay reports: ${report.pendingHandbacks} (a relay finished a job but its result has not reached the caller, e.g. the session ended first; removed after 3 days)`
+    );
   }
 
   if (report.job) {

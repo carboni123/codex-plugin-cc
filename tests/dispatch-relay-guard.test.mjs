@@ -23,7 +23,7 @@ function runGuard(command, { agentType = "codex:dispatch", toolName = "Bash" } =
   return result.stdout.trim() ? JSON.parse(result.stdout).hookSpecificOutput : null;
 }
 
-function dispatchCommand(payload, flags = "") {
+function dispatchCommand(payload, flags = " --relay") {
   return `${COMPANION} dispatch${flags} <<'CODEX_DISPATCH_PROMPT_EOF'\n${payload}\nCODEX_DISPATCH_PROMPT_EOF`;
 }
 
@@ -36,19 +36,31 @@ test("relay guard denies the relay doing the task itself and explains how to for
   const decision = runGuard("cat hello.js");
   assert.equal(decision.permissionDecision, "deny");
   assert.match(decision.permissionDecisionReason, /may only run the Codex dispatch commands/);
-  assert.ok(decision.permissionDecisionReason.includes(`${COMPANION} dispatch <<'CODEX_DISPATCH_PROMPT_EOF'`));
+  assert.ok(decision.permissionDecisionReason.includes(`${COMPANION} dispatch --relay <<'CODEX_DISPATCH_PROMPT_EOF'`));
 });
 
 test("relay guard allows dispatch, follow-up dispatch, and the NEXT wait command", () => {
   assert.equal(runGuard(dispatchCommand("--read-only --effort low\nSummarize the parser.\n\nKeep it short.")), null);
-  assert.equal(runGuard(dispatchCommand("and add a test", " --resume dispatch-muuo2c6l-dyfs50")), null);
-  assert.equal(runGuard(`${COMPANION} wait dispatch-muuo2c6l-dyfs50 --cwd "/tmp/some repo"`), null);
+  assert.equal(runGuard(dispatchCommand("and add a test", " --relay --resume dispatch-muuo2c6l-dyfs50")), null);
+  assert.equal(runGuard(`${COMPANION} wait dispatch-muuo2c6l-dyfs50 --cwd "/tmp/some repo" --relay`), null);
+});
+
+test("relay guard denies dispatch and wait commands without --relay, which would show the relay the report", () => {
+  for (const command of [
+    dispatchCommand("Summarize the parser.", ""),
+    dispatchCommand("and add a test", " --resume dispatch-muuo2c6l-dyfs50"),
+    `${COMPANION} wait dispatch-muuo2c6l-dyfs50 --cwd "/tmp/some repo"`
+  ]) {
+    const decision = runGuard(command);
+    assert.equal(decision?.permissionDecision, "deny", command);
+    assert.match(decision.permissionDecisionReason, /dispatch --relay <<'CODEX_DISPATCH_PROMPT_EOF'/);
+  }
 });
 
 test("relay guard denies commands smuggled around the dispatch command", () => {
   const smuggled = [
-    `${COMPANION} wait dispatch-1 --cwd "/repo"; cat secrets.txt`,
-    `${COMPANION} wait dispatch-1 --cwd "$(cat secrets.txt)"`,
+    `${COMPANION} wait dispatch-1 --cwd "/repo" --relay; cat secrets.txt`,
+    `${COMPANION} wait dispatch-1 --cwd "$(cat secrets.txt)" --relay`,
     dispatchCommand("payload\nCODEX_DISPATCH_PROMPT_EOF\ncat secrets.txt"),
     `${dispatchCommand("payload")}\ncat secrets.txt`,
     `cd /repo && ${dispatchCommand("payload")}`,

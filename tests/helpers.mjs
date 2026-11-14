@@ -17,6 +17,7 @@ for (const name of [
   "CODEX_DISPATCH_EFFORT",
   "CODEX_DISPATCH_NETWORK",
   "CODEX_DISPATCH_WRITABLE_ROOTS",
+  "CODEX_DISPATCH_RETRY_DELAYS",
   "CODEX_PLUGIN_SOURCE"
 ]) {
   delete process.env[name];

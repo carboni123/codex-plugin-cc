@@ -21,6 +21,25 @@ export const DISPATCH_DIRECTIVE_OPTIONS = {
 
 const NETWORK_ENV = "CODEX_DISPATCH_NETWORK";
 const WRITABLE_ROOTS_ENV = "CODEX_DISPATCH_WRITABLE_ROOTS";
+const RETRY_DELAYS_ENV = "CODEX_DISPATCH_RETRY_DELAYS";
+// Codex already reconnects a dropped stream five times within about twenty seconds, so these
+// waits start where it gave up.
+const DEFAULT_RETRY_DELAYS_MS = [20_000, 60_000, 120_000];
+
+// Errors from the service rather than from the task or the account: the same turn is likely to
+// succeed a little later. A usage limit, a full context window, or a policy block is not.
+const TRANSIENT_ERROR_KINDS = new Set([
+  "serverOverloaded",
+  "rateLimitExceeded",
+  "internalServerError",
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
+  "responseStreamDisconnected",
+  "responseTooManyFailedAttempts"
+]);
+const TRANSIENT_ERROR_MESSAGE = /at capacity|overloaded|stream disconnected|please retry|try again later|temporarily unavailable/i;
+// A usage-limit message also says when to retry, which is hours away.
+const LASTING_ERROR_MESSAGE = /usage limit|quota|credit|billing|context window/i;
 
 // Codex's shell tool runs `bash -lc` by default. On distributions whose /etc/profile rebuilds
 // PATH (Debian, Ubuntu), that drops tools installed through version managers like nvm, which
@@ -193,6 +212,43 @@ export function splitDispatchDirectives(prompt) {
   return { options, prompt: text.slice(match[0].length) };
 }
 
+/**
+ * True when a failed turn is worth continuing on the same thread: Codex names the error kind in
+ * codexErrorInfo, as a string or as an object keyed by the kind. Without a kind, or with "other",
+ * the message decides.
+ */
+export function isTransientCodexError(error) {
+  const info = error?.codexErrorInfo;
+  const kind = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : null;
+  if (kind && kind !== "other") {
+    return TRANSIENT_ERROR_KINDS.has(kind);
+  }
+  const message = String(error?.message ?? "");
+  return TRANSIENT_ERROR_MESSAGE.test(message) && !LASTING_ERROR_MESSAGE.test(message);
+}
+
+/**
+ * How long to wait before each continuation of a turn that a temporary Codex error cut off; the
+ * number of waits is the number of retries. CODEX_DISPATCH_RETRY_DELAYS takes a comma-separated
+ * list such as "20s,60s,120s", or "off".
+ */
+export function resolveDispatchRetryDelays(env = process.env) {
+  const configured = env[RETRY_DELAYS_ENV]?.trim();
+  if (!configured) {
+    return DEFAULT_RETRY_DELAYS_MS;
+  }
+  if (["off", "none", "false", "no"].includes(configured.toLowerCase())) {
+    return [];
+  }
+  return configured.split(",").map((part) => {
+    const delayMs = parseDuration(part.trim(), null);
+    if (delayMs == null || !Number.isFinite(delayMs)) {
+      throw new Error(`Invalid ${RETRY_DELAYS_ENV} value "${configured}". Use a list like 20s,60s,120s, or off.`);
+    }
+    return delayMs;
+  });
+}
+
 export function parseDuration(value, fallbackMs) {
   if (value == null || value === "" || value === true) {
     return fallbackMs;
@@ -214,6 +270,15 @@ export function buildDispatchPrompt(rootDir, { task, sandbox, network, workspace
   return interpolateTemplate(template, {
     TASK: String(task ?? "").trim(),
     SANDBOX_RULES: [sandboxRules(sandbox, workspaceRoot), network ? NETWORK_ON_RULES : NETWORK_OFF_RULES].join("\n")
+  });
+}
+
+// The assignment is sent again in full: whether Codex kept the cut-off turn's input in the
+// thread depends on where the turn stopped.
+export function buildDispatchRetryPrompt(rootDir, { prompt, error }) {
+  return interpolateTemplate(loadPromptTemplate(rootDir, "dispatch-retry"), {
+    ERROR: shorten(error, 300),
+    PROMPT: String(prompt ?? "").trim()
   });
 }
 
@@ -483,10 +548,15 @@ function selectCommandsToShow(commands) {
 export function renderDispatchReport(report) {
   const lines = [];
   const finalMessage = String(report.finalMessage ?? "").trim();
-  if (finalMessage) {
-    lines.push(finalMessage);
+  const error = report.error ? ` Error: ${report.error}` : "";
+  if (!finalMessage) {
+    lines.push(`Codex did not return a final message.${error}`);
+  } else if (report.status !== "completed" && !report.finalAnswer) {
+    // A turn that fails mid-work leaves a progress note as its last message. Shown bare, it
+    // reads as Codex's report.
+    lines.push(`Codex stopped before writing its report.${error}`, "Its last progress note, which is not a report:", "", finalMessage);
   } else {
-    lines.push(`Codex did not return a final message.${report.error ? ` Error: ${report.error}` : ""}`);
+    lines.push(finalMessage);
   }
 
   lines.push("", "---", "Codex dispatch evidence (observed by the plugin runtime, not written by Codex):");
@@ -506,6 +576,13 @@ export function renderDispatchReport(report) {
   lines.push(...renderWorktreeLines(report.worktree));
   if (report.status !== "completed" && report.error) {
     lines.push(`Error: ${shorten(report.error, 400)}`);
+  }
+  if (report.retries?.length) {
+    const count = report.retries.length;
+    const outcome = report.status === "completed" ? "" : "; the last attempt failed too";
+    lines.push(
+      `Temporary Codex errors: ${count} turn${count === 1 ? " was" : "s were"} cut off and continued on the same thread${outcome} (last: ${shorten(report.retries.at(-1).error, 200)})`
+    );
   }
   pushEvidenceLines(lines, report);
   if (report.threadId) {

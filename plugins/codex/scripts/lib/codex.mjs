@@ -25,6 +25,7 @@
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
  *   lastAgentMessage: string,
+ *   lastAgentMessagePhase: string | null,
  *   reviewText: string,
  *   reasoningSummary: string[],
  *   error: unknown,
@@ -328,6 +329,7 @@ function createTurnCaptureState(threadId, options = {}) {
     activeSubagentTurns: new Set(),
     completionTimer: null,
     lastAgentMessage: "",
+    lastAgentMessagePhase: null,
     reviewText: "",
     reasoningSummary: [],
     error: null,
@@ -429,6 +431,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
     if (item.text) {
       if (!threadId || threadId === state.threadId) {
         state.lastAgentMessage = item.text;
+        state.lastAgentMessagePhase = item.phase ?? null;
         if (lifecycle === "completed" && item.phase === "final_answer") {
           state.finalAnswerSeen = true;
           scheduleInferredCompletion(state);
@@ -1159,6 +1162,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,
+      finalMessagePhase: turnState.lastAgentMessagePhase,
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
       error: turnState.error,

@@ -24,15 +24,19 @@ import {
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import {
   buildDispatchPrompt,
+  buildDispatchRetryPrompt,
   buildDispatchThreadName,
   describeSandbox,
   DEFAULT_DISPATCH_TIMEOUT_MS,
   DISPATCH_DIRECTIVE_OPTIONS,
   DISPATCH_THREAD_CONFIG,
+  formatDurationMs,
+  isTransientCodexError,
   parseDuration,
   renderDispatchPending,
   renderDispatchReport,
   resolveDispatchNetwork,
+  resolveDispatchRetryDelays,
   resolveDispatchSandbox,
   resolveDispatchWritableRoots,
   splitDispatchDirectives,
@@ -575,24 +579,52 @@ async function executeDispatchRun(request) {
   const treeRoot = worktree?.path ?? workspaceRoot;
   const startedAt = Date.now();
   const treeBefore = snapshotWorkingTree(treeRoot);
-  // A direct app-server: its working directory decides what a workspace-write sandbox may
-  // write, and a reviewer run needs it to be the scratch directory, not the repository.
-  const result = await runAppServerTurn(sandbox.serverCwd, {
-    resumeThreadId: request.resumeThreadId ?? null,
-    prompt: request.prompt,
-    model: request.model,
-    effort: request.effort,
-    sandbox: sandbox.policy.type === "readOnly" ? "read-only" : "workspace-write",
-    sandboxPolicy: sandbox.policy,
-    threadConfig: DISPATCH_THREAD_CONFIG,
-    directAppServer: true,
-    onProgress: request.onProgress,
-    persistThread: true,
-    threadName: request.resumeThreadId ? null : buildDispatchThreadName(request.label, request.task)
-  });
+  // A temporary Codex error (model at capacity, a dropped stream) cuts a turn off mid-work. The
+  // thread keeps what Codex did, so the run continues there instead of failing: otherwise the
+  // caller has to notice the failure and send the follow-up itself.
+  const retryDelays = resolveDispatchRetryDelays();
+  const retries = [];
+  const fileChanges = [];
+  const commandExecutions = [];
+  let resumeThreadId = request.resumeThreadId ?? null;
+  let prompt = request.prompt;
+  let result;
+  let error;
+  for (;;) {
+    // A direct app-server: its working directory decides what a workspace-write sandbox may
+    // write, and a reviewer run needs it to be the scratch directory, not the repository.
+    result = await runAppServerTurn(sandbox.serverCwd, {
+      resumeThreadId,
+      prompt,
+      model: request.model,
+      effort: request.effort,
+      sandbox: sandbox.policy.type === "readOnly" ? "read-only" : "workspace-write",
+      sandboxPolicy: sandbox.policy,
+      threadConfig: DISPATCH_THREAD_CONFIG,
+      directAppServer: true,
+      onProgress: request.onProgress,
+      persistThread: true,
+      threadName: resumeThreadId ? null : buildDispatchThreadName(request.label, request.task)
+    });
+    fileChanges.push(...result.fileChanges);
+    commandExecutions.push(...result.commandExecutions);
+    error = result.error?.message || (result.status !== 0 && result.stderr) || null;
+
+    const delayMs = retryDelays[retries.length];
+    if (result.status === 0 || delayMs == null || !result.threadId || !isTransientCodexError(result.error)) {
+      break;
+    }
+    retries.push({ error, delayMs });
+    request.onProgress?.({
+      message: `Temporary Codex error; continuing on the same thread in ${formatDurationMs(delayMs)} (retry ${retries.length} of ${retryDelays.length}).`,
+      phase: "retrying"
+    });
+    await sleep(delayMs);
+    resumeThreadId = result.threadId;
+    prompt = buildDispatchRetryPrompt(ROOT_DIR, { prompt: request.prompt, error });
+  }
 
   const finalMessage = typeof result.finalMessage === "string" ? result.finalMessage : "";
-  const error = result.error?.message || (result.status !== 0 && result.stderr) || null;
   const payload = {
     status: result.status === 0 ? "completed" : "failed",
     jobId: request.jobId ?? null,
@@ -606,13 +638,15 @@ async function executeDispatchRun(request) {
     cwd: sandbox.serverCwd,
     durationMs: Date.now() - startedAt,
     finalMessage,
+    finalAnswer: result.finalMessagePhase === "final_answer",
     error,
+    retries,
     files: mergeFileChanges(
       diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(treeRoot)),
-      summarizeFileChanges(result.fileChanges, treeRoot)
+      summarizeFileChanges(fileChanges, treeRoot)
     ),
     worktree: worktree ? finishDispatchWorktree(worktree) : null,
-    commands: summarizeCommands(result.commandExecutions),
+    commands: summarizeCommands(commandExecutions),
     reasoningSummary: result.reasoningSummary
   };
 
@@ -628,7 +662,8 @@ async function executeDispatchRun(request) {
     turnId: result.turnId,
     payload,
     rendered: renderDispatchReport(payload),
-    summary: shorten(summaryLine || error || "Codex dispatch finished."),
+    // A failed run's last message is a progress note; its error says more about how it ended.
+    summary: shorten((result.status === 0 ? summaryLine || error : error || summaryLine) || "Codex dispatch finished."),
     jobTitle: request.label ? `Codex Dispatch: ${request.label}` : "Codex Dispatch",
     jobClass: "dispatch",
     write: Boolean(request.write)
@@ -1174,6 +1209,8 @@ async function handleDispatch(argv) {
   const model = normalizeRequestedModel(options.model ?? prior.model ?? process.env[DISPATCH_MODEL_ENV]);
   const effort = normalizeReasoningEffort(options.effort ?? prior.effort ?? process.env[DISPATCH_EFFORT_ENV]);
   const raw = Boolean(options.raw ?? prior.raw);
+  // The worker reads this setting; a mistyped value should stop the dispatch here, not fail the job.
+  resolveDispatchRetryDelays();
   if (options.worktree && !write && !prior.worktree) {
     throw new Error("--worktree is for write runs; a read-only run has nothing to isolate.");
   }

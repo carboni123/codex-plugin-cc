@@ -63,6 +63,8 @@ Find every place the session token is parsed and check each one for missing expi
 | `--label <name>` | Name shown in `/codex:status` |
 | `--raw` | Send the task without the report contract below |
 
+A turn cut off by a temporary Codex error (model at capacity, a dropped stream) is continued on the same thread after 20s, then 60s, then 120s, and the evidence says so. `CODEX_DISPATCH_RETRY_DELAYS` sets other waits (`5s,30s`) or turns this off (`off`).
+
 Follow-ups keep the settings of the run they continue. Defaults come from `CODEX_DISPATCH_MODEL`, `CODEX_DISPATCH_EFFORT`, `CODEX_DISPATCH_NETWORK` (`on`/`off`), and `CODEX_DISPATCH_WRITABLE_ROOTS` (`:`-separated), which you can set in the `env` block of `~/.claude/settings.json`.
 
 **What comes back.** Codex is told to work on its own, stay in scope, not commit unless asked, verify its work, and end with an Outcome / Details / Verification / Open issues report. The plugin appends evidence it observed itself:

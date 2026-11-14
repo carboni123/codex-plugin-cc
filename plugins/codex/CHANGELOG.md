@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.0
+
+- A dispatch whose turn is cut off by a temporary Codex error continues on the same thread instead of failing: after 20s, then 60s, then 120s, Codex is sent the assignment again with a note to pick up where it stopped. All 7 failed dispatches in the recorded history were of this kind ("Selected model is at capacity", "stream disconnected before completion"), and each was resumed by hand. The evidence block lists the cut-off turns, and their commands and file changes stay in it. Usage limits, a full context window, and other errors that waiting does not fix still fail at once. `CODEX_DISPATCH_RETRY_DELAYS` sets other waits (`5s,30s`) or turns retries off (`off`)
+- A failed run no longer presents Codex's last progress note as its report. The report starts with "Codex stopped before writing its report" and the error, then quotes the note as a note. `/codex:status` shows the error as the job's summary
+
 ## 1.6.0
 
 - Claude receives a dispatch report exactly as the plugin stored it. Until now the relay agent's model retyped it: the hook meant to substitute the plugin's output only runs in auto permission mode, the one mode where Claude Code gives subagents the `SubagentHandback` tool it intercepts. Of 630 recorded relay runs, 580 handed Claude an altered report: Codex's message shortened or reworded, the evidence block turned into prose, truncated commands filled in

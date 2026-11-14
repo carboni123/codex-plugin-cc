@@ -462,6 +462,26 @@ rl.on("line", (line) => {
 	        }
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
+        if (BEHAVIOR === "transient-failure-once" || BEHAVIOR === "transient-failure-always" || BEHAVIOR === "usage-limit-failure") {
+          state.failedTurns = state.failedTurns || 0;
+          if (BEHAVIOR !== "transient-failure-once" || state.failedTurns === 0) {
+            state.failedTurns += 1;
+            saveState(state);
+            const error =
+              BEHAVIOR === "usage-limit-failure"
+                ? { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded", additionalDetails: null }
+                : BEHAVIOR === "transient-failure-once"
+                  ? { message: "Selected model is at capacity. Please try a different model.", codexErrorInfo: null, additionalDetails: null }
+                  : { message: "stream disconnected before completion: Please retry.", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, additionalDetails: null };
+            send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+            send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "note_" + turnId, text: "I am checking the parser before changing it.", phase: "commentary" } } });
+            send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "commandExecution", id: "cmd_" + turnId, command: "/bin/bash -lc 'npm test'", cwd: thread.cwd, status: "failed", exitCode: 1, durationMs: 900, aggregatedOutput: "1 failing", commandActions: [], processId: null, source: "agent" } } });
+            send({ method: "error", params: { error, willRetry: false, threadId: thread.id, turnId } });
+            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed", error) } });
+            break;
+          }
+        }
+
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
           : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));

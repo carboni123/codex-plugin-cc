@@ -9,6 +9,8 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
   isCompoundCommand,
+  isTransientCodexError,
+  resolveDispatchRetryDelays,
   unwrapShellCommand,
   parseDuration,
   renderDispatchReport,
@@ -653,4 +655,97 @@ test("only failed or cancelled dispatch reports point to /codex:troubleshoot", (
   assert.match(renderDispatchReport({ ...base, status: "failed", error: "boom" }), /^Diagnose: \/codex:troubleshoot dispatch-9$/m);
   assert.doesNotMatch(renderDispatchReport({ ...base, status: "completed" }), /Diagnose:/);
   assert.match(renderDispatchUnfinished({ id: "dispatch-9", status: "cancelled" }, null), /Diagnose: \/codex:troubleshoot dispatch-9/);
+});
+
+test("temporary service errors are told apart from errors that waiting does not fix", () => {
+  for (const error of [
+    { message: "The server is overloaded.", codexErrorInfo: "serverOverloaded" },
+    { message: "stream disconnected before completion", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 503 } } },
+    { message: "Selected model is at capacity. Please try a different model.", codexErrorInfo: null },
+    { message: "stream disconnected before completion: Unable to verify model access right now. Please retry.", codexErrorInfo: "other" }
+  ]) {
+    assert.equal(isTransientCodexError(error), true, error.message);
+  }
+  for (const error of [
+    { message: "You've hit your usage limit. Please retry in 3 hours.", codexErrorInfo: "usageLimitExceeded" },
+    { message: "Your input exceeds the context window.", codexErrorInfo: "contextWindowExceeded" },
+    { message: "401 Unauthorized", codexErrorInfo: "unauthorized" },
+    { message: "Something else went wrong.", codexErrorInfo: null },
+    { message: "You've hit your usage limit. Please retry at 3:00 PM.", codexErrorInfo: null },
+    null
+  ]) {
+    assert.equal(isTransientCodexError(error), false, error?.message);
+  }
+});
+
+test("CODEX_DISPATCH_RETRY_DELAYS sets the waits between retries, or turns retries off", () => {
+  assert.deepEqual(resolveDispatchRetryDelays({}), [20_000, 60_000, 120_000]);
+  assert.deepEqual(resolveDispatchRetryDelays({ CODEX_DISPATCH_RETRY_DELAYS: "5s, 1m" }), [5_000, 60_000]);
+  assert.deepEqual(resolveDispatchRetryDelays({ CODEX_DISPATCH_RETRY_DELAYS: "off" }), []);
+  assert.throws(() => resolveDispatchRetryDelays({ CODEX_DISPATCH_RETRY_DELAYS: "soon" }), /Invalid duration/);
+  assert.throws(() => resolveDispatchRetryDelays({ CODEX_DISPATCH_RETRY_DELAYS: "5s,none" }), /Invalid CODEX_DISPATCH_RETRY_DELAYS/);
+
+  const ctx = setupRepo("task-ok");
+  const refused = companion(["dispatch", "Audit the parser."], { ...ctx, env: { ...ctx.env, CODEX_DISPATCH_RETRY_DELAYS: "soon" } });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Invalid duration "soon"/);
+});
+
+test("a turn cut off by a temporary Codex error is continued on the same thread", () => {
+  const ctx = setupRepo("transient-failure-once");
+  const env = { ...ctx.env, CODEX_DISPATCH_RETRY_DELAYS: "50ms" };
+  const result = companion(["dispatch", "--json", "Fix the parser."], { ...ctx, env });
+
+  assert.equal(result.status, 0, result.stderr);
+  const { report, jobId } = JSON.parse(result.stdout);
+  assert.equal(report.status, "completed");
+  assert.equal(report.finalMessage, "Handled the requested task.\nTask prompt accepted.");
+  assert.deepEqual(report.retries, [{ error: "Selected model is at capacity. Please try a different model.", delayMs: 50 }]);
+  // The cut-off turn's work stays in the evidence.
+  assert.deepEqual(report.commands.map((entry) => [entry.command, entry.exitCode]), [["npm test", 1]]);
+
+  const state = ctx.readFakeState();
+  assert.equal(state.lastThreadResume.threadId, report.threadId);
+  assert.match(state.lastTurnStart.prompt, /^<retry>\nYour previous turn in this thread was cut off by a temporary Codex service error: Selected model is at capacity\./);
+  assert.match(state.lastTurnStart.prompt, /<task>\nFix the parser\.\n<\/task>/);
+
+  const rendered = companion(["result", jobId], { ...ctx, env }).stdout;
+  assert.match(rendered, /^Handled the requested task\./);
+  assert.match(
+    rendered,
+    /Temporary Codex errors: 1 turn was cut off and continued on the same thread \(last: Selected model is at capacity\. Please try a different model\.\)/
+  );
+});
+
+test("retries stop after the configured waits, and a failed run's progress note is not shown as its report", () => {
+  const ctx = setupRepo("transient-failure-always");
+  const env = { ...ctx.env, CODEX_DISPATCH_RETRY_DELAYS: "50ms,50ms" };
+  const result = companion(["dispatch", "Fix the parser."], { ...ctx, env });
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout,
+    /^Codex stopped before writing its report\. Error: stream disconnected before completion: Please retry\.\nIts last progress note, which is not a report:\n\nI am checking the parser before changing it\.\n/
+  );
+  assert.match(result.stdout, /Status: failed/);
+  assert.match(result.stdout, /Temporary Codex errors: 2 turns were cut off and continued on the same thread; the last attempt failed too \(last: stream disconnected/);
+  assert.match(result.stdout, /Commands reported: 3, 3 with non-zero exit/);
+  assert.equal(ctx.readFakeState().failedTurns, 3);
+
+  const status = JSON.parse(companion(["status", "--json"], { ...ctx, env }).stdout);
+  assert.equal(status.latestFinished.summary, "stream disconnected before completion: Please retry.");
+});
+
+test("an error that waiting does not fix, and any error with retries off, fails the run at once", () => {
+  const limited = setupRepo("usage-limit-failure");
+  const first = companion(["dispatch", "Fix the parser."], { ...limited, env: { ...limited.env, CODEX_DISPATCH_RETRY_DELAYS: "50ms" } });
+  assert.equal(first.status, 1);
+  assert.match(first.stdout, /Error: You've hit your usage limit\./);
+  assert.doesNotMatch(first.stdout, /Temporary Codex errors/);
+  assert.equal(limited.readFakeState().failedTurns, 1);
+
+  const off = setupRepo("transient-failure-once");
+  const second = companion(["dispatch", "Fix the parser."], { ...off, env: { ...off.env, CODEX_DISPATCH_RETRY_DELAYS: "off" } });
+  assert.equal(second.status, 1);
+  assert.equal(off.readFakeState().failedTurns, 1);
 });

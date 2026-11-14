@@ -23,6 +23,7 @@ import {
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import {
+  attributeWorkingTreeChanges,
   buildDispatchPrompt,
   buildDispatchRetryPrompt,
   buildDispatchThreadName,
@@ -625,6 +626,7 @@ async function executeDispatchRun(request) {
   }
 
   const finalMessage = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const treeChanges = attributeWorkingTreeChanges(diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(treeRoot)), sandbox, treeRoot);
   const payload = {
     status: result.status === 0 ? "completed" : "failed",
     jobId: request.jobId ?? null,
@@ -641,10 +643,8 @@ async function executeDispatchRun(request) {
     finalAnswer: result.finalMessagePhase === "final_answer",
     error,
     retries,
-    files: mergeFileChanges(
-      diffWorkingTreeSnapshots(treeBefore, snapshotWorkingTree(treeRoot)),
-      summarizeFileChanges(fileChanges, treeRoot)
-    ),
+    files: mergeFileChanges(treeChanges.own, summarizeFileChanges(fileChanges, treeRoot)),
+    otherFiles: treeChanges.others,
     worktree: worktree ? finishDispatchWorktree(worktree) : null,
     commands: summarizeCommands(commandExecutions),
     reasoningSummary: result.reasoningSummary

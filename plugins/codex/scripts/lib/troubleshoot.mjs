@@ -23,7 +23,7 @@ export const KNOWN_LIMITATIONS = [
   "The evidence lists commands from Codex's app-server event stream, which sends nothing for a command or edit the sandbox refused. Codex's session file (below, per job) has every call.",
   "A `?` marks a compound command (`a; b`, `a | b`, `a || b`, several lines): its exit code is only the last part's.",
   "The relay agent returns two lines that name the job, and hooks attach the stored report to its result: as hook context on a background relay's completion notification (a report over 10,000 characters arrives there as a file path with a preview), or in place of a foreground relay's result. A result that arrives without the report means the hooks did not run; `/codex:result <job-id>` prints it.",
-  "In a read-only run with --writable-root, only the repository's changes are tracked; files written in the writable roots are not listed.",
+  "In a read-only run, changes in the repository are reported as made by something else, because the sandbox kept the run from writing there. With --writable-root, files written in a writable root outside the repository are not listed.",
   "CODEX_COMPANION_ROOT is exported by the SessionStart hook, so sessions started before this plugin version was installed do not have it.",
   "A Claude Code session keeps the plugin version it loaded until /reload-plugins; installing an update alone changes nothing in a running session."
 ];

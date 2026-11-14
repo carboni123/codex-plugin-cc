@@ -139,6 +139,21 @@ export function resolveDispatchSandbox({ write, network, writableRoots = [], wor
   return { mode: "read-only-with-scratch", serverCwd: scratch, writableRoots, policy: workspaceWrite(others, repositoryInTmp) };
 }
 
+/**
+ * Splits the working-tree changes seen during a run into those its sandbox let it make and
+ * those it could not have made. A read-only run cannot write in the repository, so a file that
+ * changed there was changed by something else: another dispatch in the same checkout, or Claude.
+ * A write run cannot be told apart from other writers this way; that is what --worktree is for.
+ */
+export function attributeWorkingTreeChanges(changes, sandbox, treeRoot) {
+  if (!changes || sandbox.mode === "write") {
+    return { own: changes, others: [] };
+  }
+  const root = fs.existsSync(treeRoot) ? fs.realpathSync.native(treeRoot) : treeRoot;
+  const writable = (change) => sandbox.writableRoots.some((writableRoot) => isInside(path.resolve(root, change.path), writableRoot));
+  return { own: changes.filter(writable), others: changes.filter((change) => !writable(change)) };
+}
+
 export function describeSandbox(sandbox) {
   if (sandbox.mode === "write") {
     const base = sandbox.worktree ? "workspace-write in a worktree" : "workspace-write";
@@ -151,6 +166,7 @@ export function describeSandbox(sandbox) {
 }
 
 const MAX_LISTED_FILES = 20;
+const MAX_LISTED_OTHER_FILES = 5;
 const LIST_ALL_COMMANDS_UP_TO = 10;
 const RECENT_COMMANDS = 5;
 const MAX_VERIFICATION_COMMANDS = 6;
@@ -486,17 +502,24 @@ export function formatDurationMs(ms) {
   return `${seconds}s`;
 }
 
-function pushEvidenceLines(lines, { files = [], commands = [], write }) {
+function pushFileLines(lines, heading, files, limit) {
+  lines.push(`${heading} (${files.length}):`);
+  for (const file of files.slice(0, limit)) {
+    lines.push(`  ${file.change}: ${file.path}`);
+  }
+  if (files.length > limit) {
+    lines.push(`  ... and ${files.length - limit} more`);
+  }
+}
+
+function pushEvidenceLines(lines, { files = [], otherFiles = [], commands = [], write }) {
   if (files.length === 0) {
     lines.push(write ? "Files changed during the run: none" : "Files changed during the run: none (read-only run)");
   } else {
-    lines.push(`Files changed during the run (${files.length}):`);
-    for (const file of files.slice(0, MAX_LISTED_FILES)) {
-      lines.push(`  ${file.change}: ${file.path}`);
-    }
-    if (files.length > MAX_LISTED_FILES) {
-      lines.push(`  ... and ${files.length - MAX_LISTED_FILES} more`);
-    }
+    pushFileLines(lines, "Files changed during the run", files, MAX_LISTED_FILES);
+  }
+  if (otherFiles.length > 0) {
+    pushFileLines(lines, "Changed in the repository meanwhile, not by this run", otherFiles, MAX_LISTED_OTHER_FILES);
   }
 
   const failed = commands.filter((entry) => entry.failed);

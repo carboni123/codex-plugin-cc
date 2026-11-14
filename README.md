@@ -88,7 +88,7 @@ Commands reported: 14, 2 with non-zero exit (commands and edits the sandbox refu
 Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k1c-x81
 ```
 
-- Changed files come from `git status` before and after the run plus Codex's own edits, so they include anything else that changed the working tree meanwhile. Give parallel write runs `--worktree`.
+- Changed files come from `git status` before and after the run plus Codex's own edits, so a write run's list includes anything else that changed the working tree meanwhile. Give parallel write runs `--worktree`. A read-only run cannot have made such changes, so it lists them apart, as changed "not by this run".
 - `?` instead of `✓` marks a compound command (`a; b`, `a | b`, `a || b`): its exit code is only the last part's.
 - Commands the sandbox refused are not reported; Codex's session log under `~/.codex/sessions` has every call.
 

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
+  attributeWorkingTreeChanges,
   isCompoundCommand,
   isTransientCodexError,
   resolveDispatchRetryDelays,
@@ -748,4 +749,51 @@ test("an error that waiting does not fix, and any error with retries off, fails 
   const second = companion(["dispatch", "Fix the parser."], { ...off, env: { ...off.env, CODEX_DISPATCH_RETRY_DELAYS: "off" } });
   assert.equal(second.status, 1);
   assert.equal(off.readFakeState().failedTurns, 1);
+});
+
+test("a read-only run reports files that changed in the repository as not its own", () => {
+  // The fake Codex is not sandboxed, so its write stands in for another writer in the checkout.
+  const ctx = setupRepo("with-file-write");
+  const result = companion(["dispatch", "--json"], ctx, "--read-only\nReview the branch.");
+  assert.equal(result.status, 0, result.stderr);
+  const { report, jobId } = JSON.parse(result.stdout);
+  assert.deepEqual(report.files, []);
+  assert.deepEqual(report.otherFiles, [{ path: "codex-output.txt", change: "added" }]);
+
+  const rendered = companion(["result", jobId], ctx).stdout;
+  assert.match(
+    rendered,
+    /Files changed during the run: none \(read-only run\)\nChanged in the repository meanwhile, not by this run \(1\):\n {2}added: codex-output\.txt\n/
+  );
+});
+
+test("a read-only run keeps changes inside its writable roots as its own, and a write run keeps them all", () => {
+  const ctx = setupRepo("with-file-write");
+  const scratch = path.join(fs.realpathSync(ctx.repo), "scratch");
+  fs.mkdirSync(scratch);
+  const reviewer = companion(["dispatch", "--json"], ctx, `--read-only --writable-root ${scratch}\nReview the branch; put notes in the scratch dir.`);
+  assert.equal(reviewer.status, 0, reviewer.stderr);
+  const reviewerReport = JSON.parse(reviewer.stdout).report;
+  assert.deepEqual(reviewerReport.files, [{ path: "scratch/codex-output.txt", change: "added" }]);
+  assert.deepEqual(reviewerReport.otherFiles, []);
+
+  const changes = [
+    { path: "src/app.js", change: "modified" },
+    { path: "scratch/notes.md", change: "added" }
+  ];
+  const root = fs.realpathSync(ctx.repo);
+  assert.deepEqual(attributeWorkingTreeChanges(changes, { mode: "read-only-with-scratch", writableRoots: [scratch] }, root), {
+    own: [changes[1]],
+    others: [changes[0]]
+  });
+  assert.deepEqual(attributeWorkingTreeChanges(changes, { mode: "read-only", writableRoots: [] }, root), { own: [], others: changes });
+  assert.deepEqual(attributeWorkingTreeChanges(changes, { mode: "write", writableRoots: [] }, root), { own: changes, others: [] });
+  // Outside a git repository there is no working-tree diff to attribute.
+  assert.deepEqual(attributeWorkingTreeChanges(null, { mode: "read-only", writableRoots: [] }, root), { own: null, others: [] });
+});
+
+test("a long list of other writers' changes is cut short", () => {
+  const otherFiles = Array.from({ length: 8 }, (_, index) => ({ path: `src/file-${index}.js`, change: "modified" }));
+  const rendered = renderDispatchReport({ status: "completed", jobId: "dispatch-7", write: false, cwd: "/r", finalMessage: "ok", files: [], otherFiles, commands: [] });
+  assert.match(rendered, /not by this run \(8\):\n(?: {2}modified: src\/file-\d\.js\n){5} {2}\.\.\. and 3 more\n/);
 });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.1
+
+- A read-only run no longer lists other writers' changes as its own. Changed files come from `git status` before and after the run, so a reviewer running beside an implementer in the same checkout reported the implementer's edits under "Files changed during the run": 14 of 136 recorded read-only runs did. Its sandbox cannot write in the repository, so those files now appear under "Changed in the repository meanwhile, not by this run", and "Files changed during the run" keeps only what the run could write (its `--writable-root` directories). In `--json` output they are `otherFiles`
+
 ## 1.7.0
 
 - A dispatch whose turn is cut off by a temporary Codex error continues on the same thread instead of failing: after 20s, then 60s, then 120s, Codex is sent the assignment again with a note to pick up where it stopped. All 7 failed dispatches in the recorded history were of this kind ("Selected model is at capacity", "stream disconnected before completion"), and each was resumed by hand. The evidence block lists the cut-off turns, and their commands and file changes stay in it. Usage limits, a full context window, and other errors that waiting does not fix still fail at once. `CODEX_DISPATCH_RETRY_DELAYS` sets other waits (`5s,30s`) or turns retries off (`off`)

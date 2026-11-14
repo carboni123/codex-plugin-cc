@@ -155,20 +155,13 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
   assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
   assert.match(readme, /`codex:codex-rescue` subagent/i);
-  assert.match(readme, /if you do not pass `--model` or `--effort`, Codex chooses its own defaults/i);
-  assert.match(readme, /--model gpt-5\.4-mini --effort medium/i);
-  assert.match(readme, /`spark`, the plugin maps that to `gpt-5\.3-codex-spark`/i);
-  assert.match(readme, /continue a previous Codex task/i);
-  assert.match(readme, /### `\/codex:setup`/);
-  assert.match(readme, /### `\/codex:review`/);
-  assert.match(readme, /### `\/codex:adversarial-review`/);
-  assert.match(readme, /uses the same review target selection as `\/codex:review`/i);
-  assert.match(readme, /--base main challenge whether this was the right caching and retry design/);
-  assert.match(readme, /### `\/codex:rescue`/);
-  assert.match(readme, /### `\/codex:transfer`/);
-  assert.match(readme, /### `\/codex:status`/);
-  assert.match(readme, /### `\/codex:result`/);
-  assert.match(readme, /### `\/codex:cancel`/);
+  assert.match(readme, /Without `--model` or `--effort`, Codex uses its own config/i);
+  assert.match(readme, /`spark` = `gpt-5\.3-codex-spark`/);
+  assert.match(readme, /continue a previous run/i);
+  assert.match(readme, /`\/codex:adversarial-review \[--base <ref>\]/);
+  for (const command of ["setup", "review", "adversarial-review", "rescue", "transfer", "status", "result", "cancel", "troubleshoot"]) {
+    assert.match(readme, new RegExp(`^\\| \`/codex:${command}[\` ]`, "m"), command);
+  }
 });
 
 test("transfer, result, and cancel commands are exposed as deterministic runtime entrypoints", () => {
@@ -222,7 +215,6 @@ test("setup command can offer Codex install and still points users to codex logi
   assert.match(setup, /npm install -g @openai\/codex/);
   assert.match(setup, /codex-companion\.mjs" setup --json \$ARGUMENTS/);
   assert.match(readme, /!codex login/);
-  assert.match(readme, /offer to install Codex for you/i);
-  assert.match(readme, /\/codex:setup --enable-review-gate/);
-  assert.match(readme, /\/codex:setup --disable-review-gate/);
+  assert.match(readme, /can install it with npm/i);
+  assert.match(readme, /\/codex:setup \[--enable-review-gate\\\|--disable-review-gate\]/);
 });

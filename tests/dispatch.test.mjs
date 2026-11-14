@@ -9,10 +9,8 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
   attributeWorkingTreeChanges,
-  isCompoundCommand,
   isTransientCodexError,
   resolveDispatchRetryDelays,
-  unwrapShellCommand,
   parseDuration,
   renderDispatchReport,
   renderDispatchUnfinished,
@@ -20,6 +18,8 @@ import {
   summarizeCommands,
   summarizeFileChanges
 } from "../plugins/codex/scripts/lib/dispatch.mjs";
+
+import { analyzeShellCommand, isCompoundCommand, unwrapShellCommand } from "../plugins/codex/scripts/lib/shell-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
@@ -595,16 +595,90 @@ test("isCompoundCommand flags lines whose exit code is only the last command's",
   }
 });
 
-test("compound commands are marked ? instead of ✓ in the evidence", () => {
+test("a ? marks an exit code that leaves out a part that matters, and says which", () => {
   const commands = summarizeCommands([
     { command: "/bin/bash -c 'touch /ro/x; echo exit=$?'", exitCode: 0, status: "completed" },
     { command: "/bin/bash -c 'pnpm test 2>&1 | tail -5'", exitCode: 1, status: "failed" },
-    { command: "/bin/bash -c 'cd web && pnpm test'", exitCode: 0, status: "completed" }
+    { command: "/bin/bash -c 'cd web && pnpm test'", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c 'pnpm test 2>&1 | tail -5'", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c 'set -a; . ./.env.test-db; set +a; pnpm exec vitest run src/a.test.ts'", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c \"sed -n 1,80p src/a.test.ts; rg -n 'test|build' src; cat notes.md\"", exitCode: 0, status: "completed" },
+    { command: "/bin/bash -c 'pnpm lint > /tmp/lint.log 2>&1; rc=$?; tail -20 /tmp/lint.log; exit \"$rc\"'", exitCode: 0, status: "completed" }
   ]);
   const rendered = renderDispatchReport({ status: "completed", jobId: "d", write: true, cwd: "/r", finalMessage: "ok", files: [], commands });
   assert.match(rendered, /\? touch \/ro\/x; echo exit=\$\? \(exit 0 from the last command only\)/);
   assert.match(rendered, /✗ pnpm test 2>&1 \| tail -5 \(exit 1 from the last command only\)/);
   assert.match(rendered, /✓ cd web && pnpm test \(exit 0\)/);
+  assert.match(rendered, /\? pnpm test 2>&1 \| tail -5 \(exit 0, but not from `pnpm test 2>&1`\)/);
+  assert.match(rendered, /✓ set -a; \. \.\/\.env\.test-db; set \+a; pnpm exec vitest run src\/a\.test\.ts \(exit 0 from the last command\)/);
+  assert.match(rendered, /✓ sed -n 1,80p src\/a\.test\.ts; rg -n 'test\|build' src; cat notes\.md \(exit 0\)/);
+  assert.match(rendered, /✓ pnpm lint > \/tmp\/lint\.log 2>&1; rc=\$\?; tail -20 \/tmp\/lint\.log; exit "\$rc" \(exit 0\)/);
+});
+
+test("the exit code covers a line when the shell stops at the first failure or hands the status on", () => {
+  const covered = [
+    "npm test",
+    "pnpm lint && pnpm test",
+    "set -euo pipefail\npnpm lint\npnpm test | tee /tmp/test.log",
+    "(cd web && pnpm test) > /tmp/web.log 2>&1",
+    "{ pnpm lint && pnpm typecheck; } > /tmp/checks.log 2>&1"
+  ];
+  for (const command of covered) {
+    assert.deepEqual(analyzeShellCommand(command), { compound: false, unchecked: null, verification: true }, command);
+  }
+
+  const hidden = [
+    ["pnpm test || true", "pnpm test"],
+    ["pnpm lint; pnpm test", "pnpm lint"],
+    ["set -e\npnpm test | tee /tmp/test.log", "pnpm test"],
+    ["set -e\npnpm lint && echo linted\npnpm test", "pnpm lint"],
+    ["pnpm lint > a.log 2>&1; rc=$?; pnpm test; exit $rc", "pnpm test"],
+    ["git status --short; git diff --check; git log -1", "git diff --check"],
+    ["(pnpm lint; pnpm test) > /tmp/all.log 2>&1", "pnpm lint"],
+    ["timeout 120 pnpm test; echo done", "timeout 120 pnpm test"]
+  ];
+  for (const [command, unchecked] of hidden) {
+    assert.deepEqual(analyzeShellCommand(command).unchecked, { kind: "verification", command: unchecked }, command);
+  }
+
+  // A script with a loop or a conditional decides its own exit code: only that it has several commands is known.
+  assert.deepEqual(analyzeShellCommand("for f in a b; do pnpm test $f; done"), { compound: true, unchecked: { kind: "other" }, verification: true });
+  assert.deepEqual(analyzeShellCommand("if test -e x; then ls x; fi"), { compound: true, unchecked: { kind: "other" }, verification: false });
+});
+
+test("only commands run for their result count as test, build, or lint runs", () => {
+  const verification = [
+    "npm test -- --grep auth",
+    "pnpm --filter @tyxter/dashboard exec vitest run src/features/a.test.ts",
+    "npm_config_manage_package_manager_versions=false pnpm l010:check > /tmp/gate.log 2>&1",
+    "env -u CI pnpm typecheck",
+    "npx prettier --check src",
+    "node --test tests/*.test.mjs",
+    "node scripts/gates/check-ownership.mjs --inventory",
+    "python3 -m pytest -q",
+    "cargo clippy --all-targets",
+    "git diff --check",
+    "./node_modules/.bin/tsc -p tsconfig.json"
+  ];
+  const other = [
+    "sed -n '1,120p' src/auth/session.test.ts",
+    "rg -n 'test|build|lint' src",
+    "cat tests/fixtures/build.json",
+    "git diff -- src/a.test.ts",
+    "tail -20 /tmp/test.log",
+    "python3 - <<'PY'\nprint('running the test build check')\nPY",
+    "node -e 'console.log(\"lint and test passed\")'",
+    "npx prettier --write src/a.test.ts",
+    "cp src/a.test.ts src/b.test.ts",
+    "pgrep -af 'vitest run'",
+    "pnpm install --frozen-lockfile"
+  ];
+  for (const command of verification) {
+    assert.equal(analyzeShellCommand(command).verification, true, command);
+  }
+  for (const command of other) {
+    assert.equal(analyzeShellCommand(command).verification, false, command);
+  }
 });
 
 test("unwrapping bash -c undoes its quoting, so quoted separators are not mistaken for compound commands", () => {

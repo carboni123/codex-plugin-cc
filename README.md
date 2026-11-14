@@ -89,7 +89,7 @@ Follow up: send a message to this agent, or dispatch with --resume dispatch-mg2k
 ```
 
 - Changed files come from `git status` before and after the run plus Codex's own edits, so a write run's list includes anything else that changed the working tree meanwhile. Give parallel write runs `--worktree`. A read-only run cannot have made such changes, so it lists them apart, as changed "not by this run".
-- `?` instead of `✓` marks a compound command (`a; b`, `a | b`, `a || b`): its exit code is only the last part's.
+- `?` instead of `✓` means the exit code leaves out a part that matters. For a test, build, or lint run it names the part: `pnpm test | tail` shows "exit 0, but not from `pnpm test`". Any other hidden command that does more than read files shows "exit 0 from the last command only". Lines whose unchecked parts only read files or set up the shell (`set -a; . ./.env; set +a; pnpm test`) keep their `✓`.
 - Commands the sandbox refused are not reported; Codex's session log under `~/.codex/sessions` has every call.
 
 **How it reaches Claude.** The relay agent never sees the report. When Codex is done, the relay returns two lines that name the job, and hooks attach the stored report to that result: as hook context on a background agent's completion notification, or in place of a foreground agent's result. A report over 10,000 characters arrives on a notification as a file path with a preview, and Claude reads the file. In the Claude Code interface the agent's own message is those two lines; `/codex:result <job-id>` shows the report, and it is what Claude runs if a result arrives without one.

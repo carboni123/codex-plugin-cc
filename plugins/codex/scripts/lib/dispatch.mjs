@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseArgs, splitRawArgumentString } from "./args.mjs";
 import { renderWorktreeLines } from "./dispatch-worktree.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./prompts.mjs";
+import { analyzeShellCommand, unwrapShellCommand } from "./shell-command.mjs";
 
 // Stays under Claude Code's default 2-minute Bash timeout, so a forwarding agent that
 // forgets to raise its Bash timeout still gets a clean "still running" checkpoint.
@@ -346,141 +347,49 @@ export function summarizeFileChanges(fileChanges = [], cwd = null) {
   return [...byPath].map(([path, change]) => ({ path, change }));
 }
 
-// Splits a command line into words as sh does for quotes and backslashes (no expansions).
-// Returns null when a quote is left open.
-function splitShellWords(text) {
-  const words = [];
-  let word = null;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (/\s/.test(char)) {
-      if (word != null) {
-        words.push(word);
-        word = null;
-      }
-      continue;
-    }
-    word ??= "";
-    if (char === "'") {
-      const end = text.indexOf("'", index + 1);
-      if (end === -1) {
-        return null;
-      }
-      word += text.slice(index + 1, end);
-      index = end;
-    } else if (char === '"') {
-      let closed = false;
-      for (index += 1; index < text.length; index += 1) {
-        const inner = text[index];
-        if (inner === '"') {
-          closed = true;
-          break;
-        }
-        // Inside double quotes a backslash escapes only $ ` " \ and newline (a line continuation).
-        if (inner === "\\" && '$`"\\\n'.includes(text[index + 1] ?? "")) {
-          index += 1;
-          word += text[index] === "\n" ? "" : text[index];
-          continue;
-        }
-        word += inner;
-      }
-      if (!closed) {
-        return null;
-      }
-    } else if (char === "\\") {
-      index += 1;
-      word += text[index] === "\n" ? "" : (text[index] ?? "");
-    } else {
-      word += char;
-    }
-  }
-  if (word != null) {
-    words.push(word);
-  }
-  return words;
-}
-
-// Codex runs commands through `bash -c`; show the command Codex actually meant. Undoing the
-// outer quoting also matters for isCompoundCommand: inside `bash -c "python3 -c \"a; b\""` the
-// `;` is quoted, which only shows once `\"` is a quote again. Codex's quoting can also join
-// several quoted parts into the one argument, e.g. `"rg -n '"'a|b'"' file"`.
-export function unwrapShellCommand(command) {
-  const text = String(command ?? "");
-  const match = text.match(/^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+([\s\S]+)$/);
-  if (!match) {
-    return text;
-  }
-  const words = splitShellWords(match[1]);
-  return words?.length === 1 ? words[0] : text;
-}
-
-export function looksLikeVerificationCommand(command) {
-  return /\b(test|tests|lint|build|typecheck|type-check|check|verify|validate|pytest|jest|vitest|cargo test|npm test|pnpm test|yarn test|go test|mvn test|gradle test|tsc|eslint|ruff|mypy)\b/i.test(
-    command
-  );
-}
-
-/**
- * True when a shell command runs several commands whose exit codes the shell does not combine:
- * `a; b`, `a | b`, `a || b`, or one command per line. The reported exit code is then only the
- * last command's, so `pnpm test | tail` exits 0 even when the tests fail. `a && b` chains stop at
- * the first failure, so their exit code does speak for the whole line.
- */
-export function isCompoundCommand(command) {
-  let text = String(command ?? "").trim();
-  // A here-document's body spans lines but belongs to one command.
-  if (text.includes("<<")) {
-    text = text.split(/\r?\n/)[0];
-  }
-  let quote = null;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (char === "\\" && quote !== "'") {
-      index += 1;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-    if (char === ";" || char === "\n") {
-      return true;
-    }
-    if (char === "|") {
-      // `|`, `||`, and `|&` all hide an earlier exit code.
-      return true;
-    }
-  }
-  return false;
-}
-
 export function summarizeCommands(commandExecutions = []) {
   return commandExecutions.map((item) => {
     const command = unwrapShellCommand(item?.command);
     const exitCode = typeof item?.exitCode === "number" ? item.exitCode : null;
+    const { compound, unchecked, verification } = analyzeShellCommand(command);
     return {
       command,
       exitCode,
       status: item?.status ?? null,
       durationMs: typeof item?.durationMs === "number" ? item.durationMs : null,
-      verification: looksLikeVerificationCommand(command),
-      compound: isCompoundCommand(command),
+      verification,
+      compound,
+      unchecked,
       failed: (exitCode != null && exitCode !== 0) || item?.status === "failed" || item?.status === "declined"
     };
   });
 }
 
-function formatCommand(entry) {
-  // A compound command's success is only its last part's, so it does not get a ✓.
-  const mark = entry.failed ? "✗" : entry.compound ? "?" : "✓";
+// An exit code of 0 gets a ✓ only when it speaks for the parts of the line that matter. A test or
+// build whose exit code the line hides (`pnpm test | tail`), or any other hidden command that
+// does more than read, gets a ? and the reason.
+function describeExit(entry) {
   const exit = entry.exitCode != null ? `exit ${entry.exitCode}` : entry.status ?? "unknown";
-  const outcome = entry.compound && entry.exitCode != null ? `${exit} from the last command only` : exit;
+  if (!entry.compound || entry.exitCode == null) {
+    return { mark: entry.failed ? "✗" : "✓", outcome: exit };
+  }
+  if (entry.failed) {
+    return { mark: "✗", outcome: `${exit} from the last command only` };
+  }
+  switch (entry.unchecked?.kind) {
+    case "verification":
+      return { mark: "?", outcome: `${exit}, but not from \`${shorten(entry.unchecked.command, 48)}\`` };
+    case "other":
+      return { mark: "?", outcome: `${exit} from the last command only` };
+    case "setup":
+      return { mark: "✓", outcome: `${exit} from the last command` };
+    default:
+      return { mark: "✓", outcome: exit };
+  }
+}
+
+function formatCommand(entry) {
+  const { mark, outcome } = describeExit(entry);
   const oneLine = entry.command.trim().split(/\s*\r?\n\s*/).join("; ");
   return `${mark} ${shorten(oneLine, 100)} (${outcome})`;
 }

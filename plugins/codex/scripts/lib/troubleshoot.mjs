@@ -21,7 +21,7 @@ const LOG_TAIL_LINES = 15;
 
 export const KNOWN_LIMITATIONS = [
   "The evidence lists commands from Codex's app-server event stream, which sends nothing for a command or edit the sandbox refused. Codex's session file (below, per job) has every call.",
-  "A `?` marks a compound command (`a; b`, `a | b`, `a || b`, several lines): its exit code is only the last part's.",
+  "A `?` marks a line whose exit code leaves out a test, build, or lint run (`pnpm test | tail`) or another command that does more than read files. Commands are told apart by name, so an unfamiliar test runner counts as an ordinary command, and a script with loops or conditionals gets a `?` whatever it runs.",
   "The relay agent returns two lines that name the job, and hooks attach the stored report to its result: as hook context on a background relay's completion notification (a report over 10,000 characters arrives there as a file path with a preview), or in place of a foreground relay's result. A result that arrives without the report means the hooks did not run; `/codex:result <job-id>` prints it.",
   "In a read-only run, changes in the repository are reported as made by something else, because the sandbox kept the run from writing there. With --writable-root, files written in a writable root outside the repository are not listed.",
   "CODEX_COMPANION_ROOT is exported by the SessionStart hook, so sessions started before this plugin version was installed do not have it.",

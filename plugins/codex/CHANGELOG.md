@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.2
+
+- A `?` in the evidence now means something. Until now every line with `;`, `|`, `||`, or a line break got one, which was 17,059 of about 35,500 recorded commands that exited 0, most of them bundles of file reads (`sed -n …; rg …; cat …`). The mark is kept for the two cases where the exit code leaves out a part that matters, 2,436 of those commands: a test, build, or lint run whose result the line hides, now named ("exit 0, but not from `pnpm test`"), and any other hidden command that does more than read files
+- Lines whose unchecked parts only read files get `✓`. Lines whose unchecked parts only set up the shell (`set -a; . ./.env; set +a; pnpm test`) get `✓` and "exit 0 from the last command"
+- The exit code is recognized as covering the line for `set -e` scripts (`set -o pipefail` for pipes), `( … )` and `{ …; }` groups with redirected output, and `cmd > log; rc=$?; tail log; exit "$rc"`
+- Fewer commands count as test, build, or lint runs. A command counted when one of those words appeared anywhere in it, so reading a `*.test.ts` file or an inline script mentioning "check" did: 25,946 of 38,565 recorded commands. Now the program, its subcommand, or the script it runs has to be one: 10,294. This is what long runs use to pick "the last run of each test/build/lint command", where file reads had been taking the slots
+
 ## 1.7.1
 
 - A read-only run no longer lists other writers' changes as its own. Changed files come from `git status` before and after the run, so a reviewer running beside an implementer in the same checkout reported the implementer's edits under "Files changed during the run": 14 of 136 recorded read-only runs did. Its sandbox cannot write in the repository, so those files now appear under "Changed in the repository meanwhile, not by this run", and "Files changed during the run" keeps only what the run could write (its `--writable-root` directories). In `--json` output they are `otherFiles`

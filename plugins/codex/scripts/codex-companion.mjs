@@ -16,6 +16,7 @@ import {
     getSessionRuntimeStatus,
     importExternalAgentSession,
     interruptAppServerTurn,
+    listCodexModels,
     parseStructuredOutput,
     readOutputSchema,
     runAppServerReview,
@@ -46,6 +47,7 @@ import {
 } from "./lib/dispatch.mjs";
 import { renderDispatchHandoff } from "./lib/dispatch-handoff.mjs";
 import { DISPATCH_PROGRESS_LINES, renderFinishedDispatch } from "./lib/dispatch-report.mjs";
+import { MODEL_FAMILY_NAMES, resolveModelName } from "./lib/models.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { diffWorkingTreeSnapshots, mergeFileChanges, snapshotWorkingTree } from "./lib/worktree-snapshot.mjs";
 import { createDispatchWorktree, ensureDispatchWorktree, finishDispatchWorktree } from "./lib/dispatch-worktree.mjs";
@@ -96,11 +98,6 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
-const MODEL_ALIASES = new Map([
-  ["spark", "gpt-5.3-codex-spark"],
-  ["sol", "gpt-6.1-sol"],
-  ["astra", "gpt-6-astra"]
-]);
 // Defaults for `dispatch` when the prompt's directive line does not pick a model or effort.
 // Unset means Codex's own config decides.
 const DISPATCH_MODEL_ENV = "CODEX_DISPATCH_MODEL";
@@ -140,15 +137,11 @@ function outputCommandResult(payload, rendered, asJson) {
   outputResult(asJson ? payload : rendered, asJson);
 }
 
-function normalizeRequestedModel(model) {
-  if (model == null) {
-    return null;
-  }
-  const normalized = String(model).trim();
-  if (!normalized) {
-    return null;
-  }
-  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
+// `sol` and `astra` name the newest model of a family, which Codex's model list decides. The
+// list is read at most once per command, and only when such a name is used.
+function createModelResolver(cwd) {
+  let models = null;
+  return (name) => resolveModelName(name, () => (models ??= listCodexModels(cwd)));
 }
 
 function normalizeReasoningEffort(effort) {
@@ -638,6 +631,8 @@ async function executeDispatchRun(request) {
     network: Boolean(request.network),
     sandbox: describeSandbox(sandbox),
     cwd: sandbox.serverCwd,
+    model: result.model ?? request.model ?? null,
+    effort: result.effort ?? request.effort ?? null,
     durationMs: Date.now() - startedAt,
     finalMessage,
     finalAnswer: result.finalMessagePhase === "final_answer",
@@ -867,6 +862,7 @@ async function handleReviewCommand(argv, config) {
   });
 
   config.validateRequest?.(target, focusText);
+  const { model } = await createModelResolver(cwd)(options.model);
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
     prefix: "review",
@@ -883,7 +879,7 @@ async function handleReviewCommand(argv, config) {
         cwd,
         base: options.base,
         scope: options.scope,
-        model: options.model,
+        model,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -910,7 +906,7 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
+  const { model } = await createModelResolver(cwd)(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const prompt = readTaskPrompt(cwd, options, positionals);
 
@@ -1206,7 +1202,6 @@ async function handleDispatch(argv) {
   const writableRoots = options["writable-root"]
     ? resolveDispatchWritableRoots(options, cwd)
     : prior.writableRoots ?? resolveDispatchWritableRoots({}, cwd);
-  const model = normalizeRequestedModel(options.model ?? prior.model ?? process.env[DISPATCH_MODEL_ENV]);
   const effort = normalizeReasoningEffort(options.effort ?? prior.effort ?? process.env[DISPATCH_EFFORT_ENV]);
   const raw = Boolean(options.raw ?? prior.raw);
   // The worker reads this setting; a mistyped value should stop the dispatch here, not fail the job.
@@ -1215,6 +1210,12 @@ async function handleDispatch(argv) {
     throw new Error("--worktree is for write runs; a read-only run has nothing to isolate.");
   }
   ensureCodexAvailable(cwd);
+  // A follow-up that names no model keeps the id its thread already runs on.
+  const {
+    model,
+    alias: modelAlias,
+    origin: modelOrigin
+  } = await createModelResolver(cwd)(options.model ?? prior.model ?? process.env[DISPATCH_MODEL_ENV]);
 
   const label = options.label?.trim() || resumed?.label || null;
   const followUpTask = task || DEFAULT_CONTINUE_PROMPT;
@@ -1252,6 +1253,8 @@ async function handleDispatch(argv) {
     dispatch: true,
     cwd,
     model,
+    modelAlias,
+    modelOrigin,
     effort,
     prompt,
     task: followUpTask,
@@ -1319,7 +1322,12 @@ async function handleTroubleshoot(argv) {
     recentJobs = [...snapshot.running, ...(snapshot.latestFinished ? [snapshot.latestFinished] : []), ...snapshot.recent].slice(0, 6);
   }
 
-  const report = buildTroubleshootReport({ rootDir: ROOT_DIR, workspaceRoot, jobSnapshot, storedJob, recentJobs });
+  const resolveModel = createModelResolver(cwd);
+  const modelNames = [];
+  for (const name of MODEL_FAMILY_NAMES) {
+    modelNames.push(await resolveModel(name));
+  }
+  const report = buildTroubleshootReport({ rootDir: ROOT_DIR, workspaceRoot, jobSnapshot, storedJob, recentJobs, modelNames });
   outputCommandResult(report, renderTroubleshootReport(report), options.json);
 }
 

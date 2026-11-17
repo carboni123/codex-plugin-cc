@@ -101,3 +101,8 @@ test("troubleshoot without a job id lists recent jobs and how to dig into one", 
   assert.match(rendered, /Run `\/codex:troubleshoot <job-id>`/);
   assert.match(rendered, /## Known limitations/);
 });
+
+test("troubleshoot shows which model each family name stands for right now", () => {
+  const rendered = companion(setup(), ["troubleshoot"]).stdout;
+  assert.match(rendered, /## Model names\n- `sol` is gpt-9\.10-sol: the newest sol model Codex lists\n- `astra` is gpt-9-astra: the newest astra model Codex lists\n/);
+});

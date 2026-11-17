@@ -505,6 +505,9 @@ export function renderDispatchReport(report) {
   const network = report.network == null ? "" : ` · network ${report.network ? "on" : "off"}`;
   const sandbox = report.sandbox ?? (report.write ? "workspace-write" : "read-only");
   lines.push(`Sandbox: ${sandbox}${network} · cwd: ${report.cwd}`);
+  if (report.model) {
+    lines.push(`Model: ${report.model}${report.effort ? ` · effort ${report.effort}` : ""}`);
+  }
   lines.push(...renderWorktreeLines(report.worktree));
   if (report.status !== "completed" && report.error) {
     lines.push(`Error: ${shorten(report.error, 400)}`);

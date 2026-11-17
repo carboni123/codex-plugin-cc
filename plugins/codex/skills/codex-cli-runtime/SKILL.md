@@ -33,7 +33,7 @@ Command selection:
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
 - `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (which ones apply depends on the model).
-- `--model` aliases: `spark` → `gpt-5.3-codex-spark`, `sol` → `gpt-6.1-sol`, `astra` → `gpt-6-astra`.
+- `--model` names: `spark` → `gpt-5.3-codex-spark`; `sol` and `astra` → the newest Sol or Astra model Codex lists, resolved by the companion, so pass them through as given.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
 
 Safety rules:

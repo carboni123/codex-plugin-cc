@@ -16,6 +16,8 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	// Listed out of order, with a look-alike: the newest sol model is gpt-9.10-sol.
+	const MODEL_IDS = ["gpt-9.2-sol", "gpt-9.10-sol", "gpt-9.10-sol-mini", "gpt-8.5-astra", "gpt-9-astra", "gpt-9.1-terra"];
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -305,6 +307,18 @@ rl.on("line", (line) => {
         send({ id: message.id, result: buildConfigReadResult() });
         break;
 
+      case "model/list":
+        if (BEHAVIOR === "model-list-fails") {
+          throw new Error("failed to load models");
+        }
+        if (BEHAVIOR === "model-list-hangs") {
+          break;
+        }
+        state.modelListRequests = (state.modelListRequests || 0) + 1;
+        saveState(state);
+        send({ id: message.id, result: { data: MODEL_IDS.map((id) => ({ id, model: id, hidden: false })), nextCursor: null } });
+        break;
+
       case "thread/start": {
         if (BEHAVIOR === "auth-run-fails") {
           throw new Error("authentication expired; run codex login");
@@ -313,7 +327,7 @@ rl.on("line", (line) => {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
-        state.lastThreadStart = { threadId: thread.id, cwd: message.params.cwd, sandbox: message.params.sandbox ?? null, config: message.params.config ?? null };
+        state.lastThreadStart = { threadId: thread.id, cwd: message.params.cwd, sandbox: message.params.sandbox ?? null, config: message.params.config ?? null, model: message.params.model ?? null };
         saveState(state);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });

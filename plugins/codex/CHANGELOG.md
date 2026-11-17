@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.0
+
+- `sol` and `astra` run the newest model of their family that Codex lists for the account, read from the app server's `model/list` when a command uses the name. Until now each stood for a fixed id (`gpt-6.1-sol`, `gpt-6-astra`), so a new release needed a plugin update. With `CODEX_DISPATCH_MODEL=sol` the dispatch default follows new releases too; a model id there pins it. When the list cannot be read or has no model of the family, the built-in id is used, now `gpt-6.2-sol` and `gpt-6.2-astra`
+- A follow-up that names no model stays on the model id its thread started with
+- The evidence block names the model and effort the run used ("Model: gpt-6.2-sol · effort high"), as Codex reported them for the thread. `--json` output has `model` and `effort`
+- `/codex:troubleshoot` lists which model each family name stands for right now, and why when it is the built-in id. A job's settings say when its model came from a family name
+- `review --model` and `adversarial-review --model` accept the same names; they had passed `sol` to Codex as a model id
+
 ## 1.7.2
 
 - A `?` in the evidence now means something. Until now every line with `;`, `|`, `||`, or a line break got one, which was 17,059 of about 35,500 recorded commands that exited 0, most of them bundles of file reads (`sed -n …; rg …; cat …`). The mark is kept for the two cases where the exit code leaves out a part that matters, 2,436 of those commands: a test, build, or lint run whose result the line hides, now named ("exit 0, but not from `pnpm test`"), and any other hidden command that does more than read files

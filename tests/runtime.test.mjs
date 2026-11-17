@@ -157,6 +157,26 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.match(result.stdout, /No material issues found/);
 });
 
+test("task and review run a family name on the newest model Codex lists", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const task = run("node", [SCRIPT, "task", "--model", "sol", "diagnose the failing test"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(task.status, 0, task.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).lastTurnStart.model, "gpt-9.10-sol");
+
+  const review = run("node", [SCRIPT, "review", "--model", "astra"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(review.status, 0, review.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).lastThreadStart.model, "gpt-9-astra");
+});
+
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

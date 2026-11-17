@@ -36,7 +36,7 @@ To update: `claude plugin marketplace update openai-codex && claude plugin updat
 | `/codex:troubleshoot [job-id]` | Loaded vs installed version, settings, and for a job its log, Codex session file, and report |
 | `/codex:setup [--enable-review-gate\|--disable-review-gate]` | Check that Codex is ready; toggle the review gate |
 
-Long reviews and tasks can run with `--background`; check on them with `/codex:status` and `/codex:result`. Model aliases: `sol` = `gpt-6.1-sol`, `astra` = `gpt-6-astra`, `spark` = `gpt-5.3-codex-spark`. Without `--model` or `--effort`, Codex uses its own config.
+Long reviews and tasks can run with `--background`; check on them with `/codex:status` and `/codex:result`. Model names: `sol` and `astra` run the newest Sol or Astra model your Codex account lists, so a new release is used as soon as Codex offers it; `spark` = `gpt-5.3-codex-spark`; any other name is passed to Codex as a model id. Without `--model` or `--effort`, Codex uses its own config.
 
 **Review gate.** When enabled, a `Stop` hook has Codex review Claude's response and blocks the stop if it finds issues. It can loop and drain usage limits, so enable it only while you watch the session.
 
@@ -65,7 +65,7 @@ Find every place the session token is parsed and check each one for missing expi
 
 A turn cut off by a temporary Codex error (model at capacity, a dropped stream) is continued on the same thread after 20s, then 60s, then 120s, and the evidence says so. `CODEX_DISPATCH_RETRY_DELAYS` sets other waits (`5s,30s`) or turns this off (`off`).
 
-Follow-ups keep the settings of the run they continue. Defaults come from `CODEX_DISPATCH_MODEL`, `CODEX_DISPATCH_EFFORT`, `CODEX_DISPATCH_NETWORK` (`on`/`off`), and `CODEX_DISPATCH_WRITABLE_ROOTS` (`:`-separated), which you can set in the `env` block of `~/.claude/settings.json`.
+Follow-ups keep the settings of the run they continue, including the model id its thread runs on. Defaults come from `CODEX_DISPATCH_MODEL`, `CODEX_DISPATCH_EFFORT`, `CODEX_DISPATCH_NETWORK` (`on`/`off`), and `CODEX_DISPATCH_WRITABLE_ROOTS` (`:`-separated), which you can set in the `env` block of `~/.claude/settings.json`. `CODEX_DISPATCH_MODEL=sol` keeps the default on the newest Sol model; a model id pins it.
 
 **What comes back.** Codex is told to work on its own, stay in scope, not commit unless asked, verify its work, and end with an Outcome / Details / Verification / Open issues report. The plugin appends evidence it observed itself:
 
@@ -74,6 +74,7 @@ Follow-ups keep the settings of the run they continue. Defaults come from `CODEX
 Codex dispatch evidence (observed by the plugin runtime, not written by Codex):
 Status: completed · 4m 12s · job dispatch-mg2k1c-x81 · thread thr_19
 Sandbox: workspace-write · network on · cwd: /repo
+Model: gpt-6.2-sol · effort high
 Files changed during the run (2):
   modified: src/auth/session.ts
   added: src/auth/session.test.ts
@@ -110,7 +111,7 @@ EOF
 The plugin drives your local Codex CLI through the [Codex app server](https://developers.openai.com/codex/app-server), with your existing sign-in and [config](https://developers.openai.com/codex/config-basic). Set the default model and effort in `~/.codex/config.toml`, or per project in `.codex/config.toml` (loaded only for [trusted projects](https://developers.openai.com/codex/config-advanced#project-config-files-codexconfigtoml)):
 
 ```toml
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 ```
 

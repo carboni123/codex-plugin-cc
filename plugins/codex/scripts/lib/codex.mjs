@@ -51,6 +51,8 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+const MODEL_LIST_TIMEOUT_MS = 10_000;
+const MODEL_LIST_MAX_PAGES = 20;
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -967,6 +969,54 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   }
 }
 
+/**
+ * The models this Codex account can pick, as the app server's `model/list` returns them.
+ * Codex answers from its own cache and refreshes it from time to time, so the wait is capped:
+ * a caller that only wants the newest model of a family has a built-in id to fall back on.
+ */
+export async function listCodexModels(cwd, options = {}) {
+  const timeoutMs = options.timeoutMs ?? MODEL_LIST_TIMEOUT_MS;
+  // Its own app server: the shared broker refuses requests while it runs a turn.
+  const connecting = CodexAppServerClient.connect(cwd, { disableBroker: true, env: options.env });
+  let abandoned = false;
+  const listing = connecting.then(async (client) => {
+    try {
+      const models = [];
+      /** @type {string | null} */
+      let cursor = null;
+      for (let page = 0; page < MODEL_LIST_MAX_PAGES && !abandoned; page += 1) {
+        const response = await client.request("model/list", { cursor });
+        models.push(...response.data);
+        cursor = response.nextCursor;
+        if (!cursor) {
+          break;
+        }
+      }
+      return models;
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      // Closing the app server ends the request it is waiting on, so the abandoned listing
+      // does not keep this process alive.
+      abandoned = true;
+      connecting.then((client) => client.close()).catch(() => {});
+      reject(new Error(`no answer within ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([listing, timeout]);
+  } finally {
+    clearTimeout(timer);
+    listing.catch(() => {});
+  }
+}
+
 export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   if (!threadId || !turnId) {
     return {
@@ -1111,6 +1161,9 @@ export async function runAppServerTurn(cwd, options = {}) {
   const connect = options.directAppServer ? withDirectAppServer : withAppServer;
   return connect(cwd, async (client) => {
     let threadId;
+    // What Codex says the thread runs on, for a run that did not pick a model or effort.
+    let threadModel;
+    let threadEffort;
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
@@ -1121,6 +1174,8 @@ export async function runAppServerTurn(cwd, options = {}) {
         ephemeral: false
       });
       threadId = response.thread.id;
+      threadModel = response.model;
+      threadEffort = response.reasoningEffort;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
@@ -1131,6 +1186,8 @@ export async function runAppServerTurn(cwd, options = {}) {
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });
       threadId = response.thread.id;
+      threadModel = response.model;
+      threadEffort = response.reasoningEffort;
     }
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
@@ -1161,6 +1218,9 @@ export async function runAppServerTurn(cwd, options = {}) {
       status: buildResultStatus(turnState),
       threadId,
       turnId: turnState.turnId,
+      // What the turn was started with overrides the thread's own setting.
+      model: options.model ?? threadModel ?? null,
+      effort: options.effort ?? threadEffort ?? null,
       finalMessage: turnState.lastAgentMessage,
       finalMessagePhase: turnState.lastAgentMessagePhase,
       reasoningSummary: turnState.reasoningSummary,

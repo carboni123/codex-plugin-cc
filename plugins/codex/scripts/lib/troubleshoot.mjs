@@ -116,7 +116,7 @@ function activityTail(file, lines) {
   }
 }
 
-export function buildTroubleshootReport({ rootDir, workspaceRoot, jobSnapshot = null, storedJob = null, recentJobs = [] }) {
+export function buildTroubleshootReport({ rootDir, workspaceRoot, jobSnapshot = null, storedJob = null, recentJobs = [], modelNames = [] }) {
   const loaded = readJson(path.join(rootDir, ".claude-plugin", "plugin.json"));
   const installed = installedPlugin();
   const codexVersion = runCommand("codex", ["--version"]);
@@ -146,6 +146,7 @@ export function buildTroubleshootReport({ rootDir, workspaceRoot, jobSnapshot = 
     stateRoot: resolveStateRoot(),
     broker: loadBrokerSession(workspaceRoot),
     pendingHandbacks,
+    modelNames,
     recentJobs,
     job: null,
     knownLimitations: KNOWN_LIMITATIONS
@@ -171,6 +172,7 @@ export function buildTroubleshootReport({ rootDir, workspaceRoot, jobSnapshot = 
         writableRoots: request.writableRoots ?? [],
         worktree: request.worktree ?? null,
         model: request.model ?? null,
+        ...(request.modelAlias ? { modelFrom: `${request.modelAlias}: ${request.modelOrigin}` } : {}),
         effort: request.effort ?? null,
         raw: request.raw ?? null,
         sandboxPolicy: request.sandbox?.policy ?? null
@@ -223,6 +225,13 @@ export function renderTroubleshootReport(report) {
     lines.push(
       `- Undelivered relay reports: ${report.pendingHandbacks} (a relay finished a job but its result has not reached the caller, e.g. the session ended first; removed after 3 days)`
     );
+  }
+
+  if (report.modelNames.length) {
+    lines.push("", "## Model names");
+    for (const name of report.modelNames) {
+      lines.push(`- \`${name.alias}\` is ${name.model}: ${name.origin}`);
+    }
   }
 
   if (report.job) {

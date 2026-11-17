@@ -157,6 +157,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /`codex:codex-rescue` subagent/i);
   assert.match(readme, /Without `--model` or `--effort`, Codex uses its own config/i);
   assert.match(readme, /`spark` = `gpt-5\.3-codex-spark`/);
+  assert.match(readme, /`sol` and `astra` run the newest Sol or Astra model your Codex account lists/);
   assert.match(readme, /continue a previous run/i);
   assert.match(readme, /`\/codex:adversarial-review \[--base <ref>\]/);
   for (const command of ["setup", "review", "adversarial-review", "rescue", "transfer", "status", "result", "cancel", "troubleshoot"]) {

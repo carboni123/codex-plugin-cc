@@ -307,14 +307,38 @@ test("dispatch rejects resuming a job that is still running", () => {
   companion(["cancel", launched.jobId], ctx);
 });
 
-test("dispatch resolves model aliases and accepts the newer effort levels", () => {
+test("dispatch runs a family name on the newest model Codex lists and accepts the newer effort levels", () => {
   const ctx = setupRepo("task-ok");
   const result = companion(["dispatch"], ctx, "--model sol --effort ultra\nAudit the parser.");
 
   assert.equal(result.status, 0, result.stderr);
   const state = ctx.readFakeState();
-  assert.equal(state.lastTurnStart.model, "gpt-6.1-sol");
+  assert.equal(state.lastTurnStart.model, "gpt-9.10-sol");
   assert.equal(state.lastTurnStart.effort, "ultra");
+  assert.match(result.stdout, /^Model: gpt-9\.10-sol · effort ultra$/m);
+});
+
+test("the evidence names the model Codex ran when the dispatch chose none", () => {
+  const ctx = setupRepo("task-ok");
+  const result = companion(["dispatch", "Audit the parser."], ctx);
+
+  assert.equal(result.status, 0, result.stderr);
+  // The plugin sent no model, so this is the fake Codex's own default.
+  assert.equal(ctx.readFakeState().lastTurnStart.model, null);
+  assert.match(result.stdout, /^Model: gpt-5\.4$/m);
+});
+
+test("dispatch runs a family name on the built-in model when Codex's model list cannot be read", () => {
+  const ctx = setupRepo("model-list-fails");
+  const result = companion(["dispatch", "--json"], ctx, "--model sol\nAudit the parser.");
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6.2-sol");
+
+  const { jobId } = JSON.parse(result.stdout);
+  const settings = JSON.parse(companion(["troubleshoot", jobId, "--json"], ctx).stdout).job.settings;
+  assert.equal(settings.model, "gpt-6.2-sol");
+  assert.equal(settings.modelFrom, "sol: the plugin's built-in id, because Codex's model list could not be read: failed to load models");
 });
 
 test("dispatch defaults to CODEX_DISPATCH_MODEL/EFFORT and the directive line overrides them", () => {
@@ -323,13 +347,16 @@ test("dispatch defaults to CODEX_DISPATCH_MODEL/EFFORT and the directive line ov
 
   const defaulted = companion(["dispatch", "Audit the parser."], { ...ctx, env });
   assert.equal(defaulted.status, 0, defaulted.stderr);
-  assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6-astra");
+  assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-9-astra");
   assert.equal(ctx.readFakeState().lastTurnStart.effort, "high");
+  assert.equal(ctx.readFakeState().modelListRequests, 1);
 
   const overridden = companion(["dispatch"], { ...ctx, env }, "--model gpt-6-luna --effort max\nAudit it again.");
   assert.equal(overridden.status, 0, overridden.stderr);
   assert.equal(ctx.readFakeState().lastTurnStart.model, "gpt-6-luna");
   assert.equal(ctx.readFakeState().lastTurnStart.effort, "max");
+  // A model id is used as given: nothing is looked up.
+  assert.equal(ctx.readFakeState().modelListRequests, 1);
 });
 
 test("dispatch gives write runs network access and keeps read-only runs offline by default", () => {
@@ -387,7 +414,9 @@ test("a follow-up inherits the resumed run's sandbox, network, model, effort, an
   const state = ctx.readFakeState();
   assert.equal(state.lastThreadResume.sandbox, "read-only");
   assert.deepEqual(state.lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: true });
-  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  // The thread stays on the model it started with: the follow-up does not look for a newer one.
+  assert.equal(state.lastTurnStart.model, "gpt-9-astra");
+  assert.equal(state.modelListRequests, 1);
   assert.equal(state.lastTurnStart.effort, "max");
   assert.equal(state.lastTurnStart.prompt, "follow up: check the eviction path too");
 
@@ -719,7 +748,7 @@ test("a follow-up from another directory runs where the resumed run ran, with it
   const state = ctx.readFakeState();
   assert.equal(state.lastThreadResume.cwd, other);
   assert.deepEqual(state.lastTurnStart.sandboxPolicy, { type: "readOnly", networkAccess: true });
-  assert.equal(state.lastTurnStart.model, "gpt-6-astra");
+  assert.equal(state.lastTurnStart.model, "gpt-9-astra");
   assert.equal(report.cwd, other);
   // The follow-up job is recorded with the work it continues, not in the caller's workspace.
   assert.equal(JSON.parse(companion(["result", JSON.parse(followUp.stdout).jobId, "--json", "--cwd", other], ctx).stdout).job.workspaceRoot, other);
